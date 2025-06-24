@@ -5,8 +5,13 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import 'react-native-reanimated';
+import "@/global.css";
+import { AuthProvider } from "@/context/auth-context";
 
 import { useColorScheme } from '@/components/useColorScheme';
+import { GluestackUIProvider } from '@gluestack-ui/themed';
+import { StyledProvider } from '@gluestack-style/react';
+import { gluestackConfig } from '@/lib/gluestack-theme';
 
 export {
   // Catch any errors thrown by the Layout component.
@@ -42,7 +47,15 @@ export default function RootLayout() {
     return null;
   }
 
-  return <RootLayoutNav />;
+  return (
+      <AuthProvider>
+        <StyledProvider config={gluestackConfig}>
+          <GluestackUIProvider config={gluestackConfig}>
+            <RootLayoutNav />
+          </GluestackUIProvider>
+        </StyledProvider>
+      </AuthProvider>
+  );
 }
 
 function RootLayoutNav() {
