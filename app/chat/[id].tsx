@@ -6,6 +6,7 @@ import {
   Alert,
   Keyboard,
   ActivityIndicator,
+  Modal as RNModal,
 } from "react-native";
 import { useLocalSearchParams, useRouter, Stack } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -30,6 +31,11 @@ import {
 } from "@gluestack-ui/themed";
 import { useColorScheme } from "nativewind";
 import { chatsService, Chat, Message, getProfilePhotoUrl } from "@/services/chats-service";
+import { sqliteService } from "@/services/sqlite-service";
+import { webSocketService } from "@/services/websocket-service";
+import { agoraService } from "@/services/agora-service";
+import CallScreen from "@/components/ui/chat/CallScreen";
+import NetInfo from "@react-native-community/netinfo";
 import { format } from "date-fns";
 
 // Sample chat data
@@ -93,12 +99,21 @@ export default function ChatScreen() {
   const flatListRef = useRef(null);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [oldestMessageId, setOldestMessageId] = useState<number | null>(null);
   const [optionsVisible, setOptionsVisible] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
+  const [typingUser, setTypingUser] = useState<string | null>(null);
+  const [chatChannel, setChatChannel] = useState<any>(null);
+  const [lastTypingTime, setLastTypingTime] = useState(0);
+  const [callVisible, setCallVisible] = useState(false);
+  const [isVideoCall, setIsVideoCall] = useState(false);
 
   // Fetch chat data
   const fetchChatData = async () => {
@@ -111,6 +126,10 @@ export default function ChatScreen() {
       if (response && response.status === 'success') {
         setChat(response.data.chat);
         setMessages(response.data.messages);
+
+        // Set pagination data
+        setHasMoreMessages(response.data.pagination.has_more);
+        setOldestMessageId(response.data.pagination.oldest_message_id);
       } else {
         setError('Failed to fetch chat data');
       }
@@ -122,8 +141,107 @@ export default function ChatScreen() {
     }
   };
 
+  // Load older messages when scrolling up
+  const loadOlderMessages = async () => {
+    // Don't load more if already loading or no more messages
+    if (loadingMore || !hasMoreMessages || oldestMessageId === null) {
+      return;
+    }
+
+    try {
+      setLoadingMore(true);
+
+      const response = await chatsService.loadOlderMessages(chatId, oldestMessageId);
+
+      if (response && response.status === 'success') {
+        // Prepend the older messages to the current messages
+        setMessages(prevMessages => [...response.data.messages, ...prevMessages]);
+
+        // Update pagination data
+        setHasMoreMessages(response.data.pagination.has_more);
+        setOldestMessageId(response.data.pagination.oldest_message_id);
+      }
+    } catch (err) {
+      console.error('Error loading older messages:', err);
+      // Show a toast or alert here if needed
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   useEffect(() => {
     fetchChatData();
+  }, [chatId]);
+
+  // Initialize WebSocket connection and subscribe to chat channel
+  useEffect(() => {
+    let channel: any = null;
+
+    const initializeWebSocket = async () => {
+      try {
+        // Initialize the WebSocket service
+        await webSocketService.initialize();
+
+        // Subscribe to the chat channel
+        channel = webSocketService.subscribeToChat(
+          chatId,
+          // Handle new messages
+          (newMessage: Message) => {
+            console.log('Received new message via WebSocket:', newMessage);
+
+            // Only add the message if it's not from the current user
+            if (!newMessage.is_mine) {
+              setMessages(prevMessages => {
+                // Check if the message is already in the list
+                const messageExists = prevMessages.some(msg => msg.id === newMessage.id);
+                if (messageExists) {
+                  return prevMessages;
+                }
+                return [...prevMessages, newMessage];
+              });
+
+              // Scroll to bottom when new message arrives
+              setTimeout(() => {
+                flatListRef.current?.scrollToEnd({ animated: true });
+              }, 100);
+            }
+          },
+          // Handle typing indicators
+          (user: any) => {
+            if (user && user.id !== 503) { // Assuming current user ID is 503
+              setIsTyping(true);
+              setTypingUser(user.name || 'Someone');
+
+              // Clear typing indicator after 3 seconds
+              setTimeout(() => {
+                setIsTyping(false);
+                setTypingUser(null);
+              }, 3000);
+            }
+          }
+        );
+
+        setChatChannel(channel);
+      } catch (error) {
+        console.error('Error initializing WebSocket:', error);
+        Alert.alert(
+          "Connection Error",
+          "Failed to connect to chat server. Some features may not work properly.",
+          [{ text: "OK" }]
+        );
+      }
+    };
+
+    if (chatId) {
+      initializeWebSocket();
+    }
+
+    // Cleanup function
+    return () => {
+      if (channel) {
+        webSocketService.unsubscribe(channel);
+      }
+    };
   }, [chatId]);
 
   useEffect(() => {
@@ -165,18 +283,48 @@ export default function ChatScreen() {
     router.back();
   };
 
-  const handlePhoneCall = () => {
-    const userName = chat?.other_user?.profile ?
-      `${chat.other_user.profile.first_name} ${chat.other_user.profile.last_name}` :
-      "User";
-    Alert.alert("Call", `Calling ${userName}...`);
+  const handlePhoneCall = async () => {
+    try {
+      // Initialize Agora service if not already initialized
+      await agoraService.initialize();
+
+      // Set call type to audio
+      setIsVideoCall(false);
+
+      // Show call screen
+      setCallVisible(true);
+    } catch (error) {
+      console.error('Error starting audio call:', error);
+      Alert.alert(
+        "Call Error",
+        "Failed to start audio call. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
   };
 
-  const handleVideoCall = () => {
-    const userName = chat?.other_user?.profile ?
-      `${chat.other_user.profile.first_name} ${chat.other_user.profile.last_name}` :
-      "User";
-    Alert.alert("Video Call", `Starting video call with ${userName}...`);
+  const handleVideoCall = async () => {
+    try {
+      // Initialize Agora service if not already initialized
+      await agoraService.initialize();
+
+      // Set call type to video
+      setIsVideoCall(true);
+
+      // Show call screen
+      setCallVisible(true);
+    } catch (error) {
+      console.error('Error starting video call:', error);
+      Alert.alert(
+        "Call Error",
+        "Failed to start video call. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
+  };
+
+  const handleEndCall = () => {
+    setCallVisible(false);
   };
 
   const handleBlockUser = () => {
@@ -252,42 +400,163 @@ export default function ChatScreen() {
     setOptionsVisible(false);
   };
 
+  const handleRetry = async (failedMessage: Message) => {
+    try {
+      // Check network connectivity before retrying
+      const netInfo = await NetInfo.fetch();
+      const isConnected = netInfo.isConnected && netInfo.isInternetReachable;
+
+      if (!isConnected) {
+        // If still offline, show a message and keep the message as is
+        Alert.alert(
+          "Offline",
+          "You are currently offline. The message will be sent automatically when you're back online.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+
+      // Update the message status to sending in UI
+      setMessages(prevMessages =>
+        prevMessages.map(msg =>
+          msg.id === failedMessage.id ? { ...msg, status: "sending" } : msg
+        )
+      );
+
+      // Also update the message status in SQLite
+      await sqliteService.updateMessageStatus(failedMessage.id, "sending");
+
+      // Send the message to the API
+      const response = await chatsService.sendMessage(
+        chatId,
+        failedMessage.content,
+        failedMessage.media_url,
+        failedMessage.message_type,
+        failedMessage.media_data,
+        failedMessage.reply_to_message_id
+      );
+
+      if (response && response.status === 'success') {
+        // Replace the failed message with the real one from the API
+        setMessages(prevMessages =>
+          prevMessages.map(msg =>
+            msg.id === failedMessage.id ? response.data.message : msg
+          )
+        );
+
+        // The chatsService.sendMessage already saves the message to SQLite
+      } else {
+        // If the API call failed again, keep it as failed
+        setMessages(prevMessages =>
+          prevMessages.map(msg =>
+            msg.id === failedMessage.id ? { ...msg, status: "failed" } : msg
+          )
+        );
+
+        // Update the message status in SQLite
+        await sqliteService.updateMessageStatus(failedMessage.id, "failed");
+
+        // Show an error message
+        Alert.alert(
+          "Error",
+          "Failed to send message. Please try again.",
+          [{ text: "OK" }]
+        );
+      }
+    } catch (err) {
+      console.error('Error retrying message:', err);
+
+      // Mark the message as failed again in UI
+      setMessages(prevMessages =>
+        prevMessages.map(msg =>
+          msg.id === failedMessage.id ? { ...msg, status: "failed" } : msg
+        )
+      );
+
+      // Update the message status in SQLite
+      try {
+        await sqliteService.updateMessageStatus(failedMessage.id, "failed");
+      } catch (sqliteError) {
+        console.error('Error updating message status in SQLite:', sqliteError);
+      }
+
+      // Show an error message
+      Alert.alert(
+        "Error",
+        "An error occurred while sending the message. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
+  };
+
   const handleSend = async () => {
     if (message.trim() === "") return;
 
-    // In a real app, this would make an API call to send the message
-    // For now, we'll just add it to the local state
-    const newMessage: Message = {
-      id: Date.now(), // Temporary ID
-      chat_id: chatId,
-      sender_id: 503, // Assuming current user ID is 503 based on the API response example
-      reply_to_message_id: null,
-      content: message,
-      message_type: "text",
-      media_data: null,
-      media_url: null,
-      thumbnail_url: null,
-      status: "sent",
-      is_edited: false,
-      edited_at: null,
-      sent_at: new Date().toISOString(),
-      deleted_at: null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      is_mine: true,
-      sender: {
-        id: 503,
-        email: "hshehdjs@gmail.com" // Placeholder email
+    try {
+      // Clear the input field immediately for better UX
+      const messageToSend = message.trim();
+      setMessage("");
+
+      // Send the message using the chat service (which handles SQLite integration)
+      const response = await chatsService.sendMessage(
+        chatId,
+        messageToSend,
+        undefined, // media_url
+        "text", // message_type
+        undefined, // media_data
+        undefined // reply_to_message_id
+      );
+
+      if (response) {
+        // Add the message to the UI (either the real one from API or the local one)
+        // The chatsService.sendMessage handles storing in SQLite already
+        setMessages(prevMessages => [...prevMessages, response.data.message]);
+
+        // Scroll to bottom
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      } else {
+        // This should not happen as chatsService.sendMessage always returns a response
+        // But just in case, show an error message
+        Alert.alert(
+          "Error",
+          "Failed to send message. Please try again.",
+          [{ text: "OK" }]
+        );
       }
-    };
+    } catch (err) {
+      console.error('Error sending message:', err);
 
-    setMessages([...messages, newMessage]);
-    setMessage("");
+      // Show an error message
+      Alert.alert(
+        "Error",
+        "An error occurred while sending the message. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
+  };
 
-    // Scroll to bottom
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: true });
-    }, 100);
+  // Send typing indicator to the server
+  const sendTypingIndicator = () => {
+    // Throttle typing events to avoid sending too many
+    const now = Date.now();
+    if (now - lastTypingTime < 3000) return; // Only send every 3 seconds
+
+    try {
+      // Send typing indicator via WebSocket service
+      webSocketService.sendTypingIndicator(chatId, {
+        id: 503, // Assuming current user ID is 503
+        name: 'Me' // This would be the current user's name in a real app
+      });
+
+      console.log('Sending typing indicator');
+
+      // Update last typing time
+      setLastTypingTime(now);
+    } catch (error) {
+      console.error('Error sending typing indicator:', error);
+    }
   };
 
   const formatMessageTime = (timestamp: string): string => {
@@ -299,11 +568,26 @@ export default function ChatScreen() {
 
   const renderMessage = ({ item }: { item: Message }) => {
     const isMe = item.is_mine;
+
+    // Determine background color based on message status
+    let bgColor = isMe ? "$primary500" : "$backgroundLight100";
+    let darkBgColor = isMe ? "$primary500" : "$backgroundDark800";
+
+    if (isMe) {
+      if (item.status === "sending" || item.status === "pending") {
+        bgColor = "$primary400"; // Lighter color for sending/pending
+        darkBgColor = "$primary400";
+      } else if (item.status === "failed") {
+        bgColor = "$error500"; // Red color for failed
+        darkBgColor = "$error500";
+      }
+    }
+
     return (
       <Box
         maxWidth="80%"
-        bg={isMe ? "$primary500" : "$backgroundLight100"}
-        $dark-bg={isMe ? "$primary500" : "$backgroundDark800"}
+        bg={bgColor}
+        $dark-bg={darkBgColor}
         borderRadius="$2xl"
         p="$3"
         mb="$2"
@@ -318,15 +602,31 @@ export default function ChatScreen() {
         >
           {item.content}
         </Text>
-        <Text
-          color={isMe ? "$primary200" : "$textLight500"}
-          $dark-color={isMe ? "$primary200" : "$textDark400"}
-          fontSize="$xs"
-          mt="$1"
-          textAlign="right"
-        >
-          {formatMessageTime(item.sent_at)}
-        </Text>
+        <HStack justifyContent="flex-end" alignItems="center" mt="$1">
+          {isMe && (
+            <>
+              {(item.status === "sending" || item.status === "pending") && (
+                <Ionicons name="time-outline" size={12} color="#E0E0E0" style={{ marginRight: 4 }} />
+              )}
+              {item.status === "sent" && (
+                <Ionicons name="checkmark" size={12} color="#E0E0E0" style={{ marginRight: 4 }} />
+              )}
+              {item.status === "failed" && (
+                <Pressable onPress={() => handleRetry(item)}>
+                  <Ionicons name="alert-circle" size={12} color="#FF4D4D" style={{ marginRight: 4 }} />
+                </Pressable>
+              )}
+            </>
+          )}
+          <Text
+            color={isMe ? "$primary200" : "$textLight500"}
+            $dark-color={isMe ? "$primary200" : "$textDark400"}
+            fontSize="$xs"
+            textAlign="right"
+          >
+            {formatMessageTime(item.sent_at)}
+          </Text>
+        </HStack>
       </Box>
     );
   };
@@ -374,6 +674,27 @@ export default function ChatScreen() {
           headerShown: false,
         }}
       />
+
+      {/* Call Modal */}
+      <RNModal
+        visible={callVisible}
+        animationType="slide"
+        presentationStyle="fullScreen"
+        onRequestClose={handleEndCall}
+      >
+        {chat && (
+          <CallScreen
+            chatId={chatId}
+            userId={chat.other_user.id}
+            userName={chat.other_user.profile ?
+              `${chat.other_user.profile.first_name} ${chat.other_user.profile.last_name}` :
+              "User"}
+            userAvatar={getProfilePhotoUrl(chat.other_user) || "https://via.placeholder.com/150"}
+            isVideoCall={isVideoCall}
+            onEndCall={handleEndCall}
+          />
+        )}
+      </RNModal>
 
       <SafeAreaView
         flex={1}
@@ -577,13 +898,102 @@ export default function ChatScreen() {
             showsVerticalScrollIndicator={false}
             onContentSizeChange={() => {
               // Auto scroll to bottom when new messages are added
-              setTimeout(() => {
-                flatListRef.current?.scrollToEnd({ animated: true });
-              }, 100);
+              if (!loadingMore) {
+                setTimeout(() => {
+                  flatListRef.current?.scrollToEnd({ animated: true });
+                }, 100);
+              }
             }}
+            // Load more messages when scrolling to the top
+            onScroll={({ nativeEvent }) => {
+              // Check if user has scrolled to the top
+              if (nativeEvent.contentOffset.y <= 0 && hasMoreMessages && !loadingMore) {
+                loadOlderMessages();
+              }
+            }}
+            // Add loading indicator at the top
+            ListHeaderComponent={
+              loadingMore ? (
+                <Box py="$4" alignItems="center">
+                  <ActivityIndicator size="small" color="#8B5CF6" />
+                  <Text mt="$2" color="$textLight500" $dark-color="$textDark400">
+                    Loading more messages...
+                  </Text>
+                </Box>
+              ) : hasMoreMessages ? (
+                <Box py="$4" alignItems="center">
+                  <Pressable
+                    onPress={loadOlderMessages}
+                    bg="$backgroundLight100"
+                    $dark-bg="$backgroundDark800"
+                    px="$4"
+                    py="$2"
+                    borderRadius="$md"
+                  >
+                    <Text color="$primary600" $dark-color="$primary400">
+                      Load older messages
+                    </Text>
+                  </Pressable>
+                </Box>
+              ) : null
+            }
           />
 
           {/* Message Input - Fixed at bottom */}
+          {/* Typing Indicator */}
+          {isTyping && (
+            <Box
+              bg="$backgroundLight50"
+              $dark-bg="$backgroundDark900"
+              px="$3"
+              py="$1"
+            >
+              <HStack space="xs" alignItems="center">
+                <Box
+                  bg="$backgroundLight200"
+                  $dark-bg="$backgroundDark700"
+                  borderRadius="$full"
+                  p="$1"
+                  px="$2"
+                >
+                  <HStack space="xs" alignItems="center">
+                    <Box>
+                      <HStack space="xs">
+                        <Box
+                          w="$1.5"
+                          h="$1.5"
+                          bg="$primary500"
+                          borderRadius="$full"
+                          style={{ opacity: 0.6 }}
+                        />
+                        <Box
+                          w="$1.5"
+                          h="$1.5"
+                          bg="$primary500"
+                          borderRadius="$full"
+                          style={{ opacity: 0.8 }}
+                        />
+                        <Box
+                          w="$1.5"
+                          h="$1.5"
+                          bg="$primary500"
+                          borderRadius="$full"
+                        />
+                      </HStack>
+                    </Box>
+                    <Text
+                      color="$textLight600"
+                      $dark-color="$textDark300"
+                      fontSize="$xs"
+                    >
+                      {typingUser || 'Someone'} is typing...
+                    </Text>
+                  </HStack>
+                </Box>
+              </HStack>
+            </Box>
+          )}
+
           <Box
             bg="$backgroundLight50"
             $dark-bg="$backgroundDark900"
@@ -621,7 +1031,13 @@ export default function ChatScreen() {
                     color="$textLight900"
                     $dark-color="$textDark100"
                     value={message}
-                    onChangeText={setMessage}
+                    onChangeText={(text) => {
+                      setMessage(text);
+                      // Send typing indicator when user types
+                      if (text.length > 0) {
+                        sendTypingIndicator();
+                      }
+                    }}
                     onFocus={() => setIsInputFocused(true)}
                     onBlur={() => setIsInputFocused(false)}
                   />

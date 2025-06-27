@@ -14,14 +14,25 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hitcklife.yoryordatingapp",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs access to your camera to enable video calls",
+        "NSMicrophoneUsageDescription": "This app needs access to your microphone to enable voice and video calls"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.hitcklife.yoryordatingapp",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -30,7 +41,9 @@
     },
     "plugins": [
       "expo-router",
-      "expo-web-browser"
+      "expo-web-browser",
+      "expo-sqlite",
+      "expo-camera"
     ],
     "experiments": {
       "typedRoutes": true
