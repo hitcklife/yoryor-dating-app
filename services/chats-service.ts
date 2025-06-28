@@ -168,6 +168,29 @@ export interface SendMessageResponse {
   };
 }
 
+// Helper function to get current user ID
+export async function getCurrentUserId(): Promise<number | null> {
+  try {
+    const userData = await AsyncStorage.getItem('user_data');
+    if (userData) {
+      const user = JSON.parse(userData);
+      return user.id;
+    }
+    return null;
+  } catch (error) {
+    console.error('Error getting current user ID:', error);
+    return null;
+  }
+}
+
+// Helper function to add is_mine property to messages
+export function addMessageOwnership(messages: Message[], currentUserId: number): Message[] {
+  return messages.map(message => ({
+    ...message,
+    is_mine: message.sender_id === currentUserId
+  }));
+}
+
 // Helper function to get profile photo URL
 export function getProfilePhotoUrl(user: OtherUser | null, useHighRes: boolean = false): string | null {
   if (!user) {
@@ -203,447 +226,293 @@ export function getProfilePhotoUrl(user: OtherUser | null, useHighRes: boolean =
   return null;
 }
 
-// Add pagination tracking for individual chats
 class ChatsService {
-  private currentPage: number = 1;
-  private lastPage: number = 1;
-  private isLoading: boolean = false;
-  private chatPagination: Map<number, { currentPage: number; lastPage: number; isLoading: boolean }> = new Map();
+  private currentUserId: number | null = null;
 
   constructor() {
-    // Set base URL when service is instantiated
-    this.configureAxios();
+    this.initializeCurrentUser();
   }
 
-  // Configure axios with base URL and default headers
-  private configureAxios(): void {
-    if (!axios.defaults.baseURL) {
-      axios.defaults.baseURL = API_BASE_URL;
+  private async initializeCurrentUser(): Promise<void> {
+    this.currentUserId = await getCurrentUserId();
+  }
+
+  async getCurrentUser(): Promise<number | null> {
+    if (!this.currentUserId) {
+      this.currentUserId = await getCurrentUserId();
     }
+    return this.currentUserId;
   }
 
-  // Function to set authorization header
-  private async setAuthHeader(): Promise<boolean> {
+  async getChats(page: number = 1): Promise<ChatsResponse | null> {
     try {
+      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
+
+      if (!isConnected) {
+        console.log('No internet connection, fetching from SQLite...');
+        const offlineChats = await sqliteService.getChats();
+
+        if (offlineChats && offlineChats.length > 0) {
+          return {
+            status: 'success',
+            data: {
+              chats: offlineChats,
+              pagination: {
+                total: offlineChats.length,
+                per_page: 10,
+                current_page: 1,
+                last_page: 1
+              }
+            }
+          };
+        }
+      }
+
       const token = await AsyncStorage.getItem('auth_token');
       if (!token) {
-        console.error('No auth token found');
-        return false;
+        throw new Error('No auth token found');
       }
 
-      // Ensure axios is configured
-      this.configureAxios();
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      return true;
-    } catch (error) {
-      console.error('Error setting auth header:', error);
-      return false;
-    }
-  }
-
-  // Function to fetch chats
-  async fetchChats(page: number = 1): Promise<ChatsResponse | null> {
-    try {
-      console.log(`Attempting to fetch chats (page: ${page})`);
-      this.isLoading = true;
-
-      // Check network connectivity
-      const netInfo = await NetInfo.fetch();
-      const isConnected = netInfo.isConnected && netInfo.isInternetReachable;
-      console.log(`Network status - Connected: ${netInfo.isConnected}, Internet: ${netInfo.isInternetReachable}`);
-
-      // If online, try API call first
-      if (isConnected) {
-        try {
-          console.log('Online mode: attempting API call');
-
-          if (!(await this.setAuthHeader())) {
-            console.log('Failed to set auth header, falling back to local data');
-          } else {
-            // Make the API call
-            console.log('Making API request to /api/v1/chats');
-            const response = await axios.get(`/api/v1/chats?page=${page}`);
-            console.log('API response status:', response.data.status);
-
-            if (response.data.status === 'success') {
-              this.currentPage = response.data.data.pagination.current_page;
-              this.lastPage = response.data.data.pagination.last_page;
-
-              // Store chats in SQLite for offline access
-              const chats = response.data.data.chats;
-              console.log(`Received ${chats.length} chats from API`);
-
-              for (const chat of chats) {
-                await sqliteService.saveChat(chat);
-              }
-
-              return response.data;
-            }
-          }
-        } catch (apiError) {
-          console.error('API call failed, falling back to local data:', apiError);
-          // Continue to local fallback
+      const response = await axios.get(`${API_BASE_URL}/api/v1/chats`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+        },
+        params: {
+          page,
+          per_page: 10
         }
-      }
-
-      // If offline or API failed, try to get chats from SQLite
-      console.log('Fetching chats from local database');
-      const localChats = await sqliteService.getChats();
-      console.log(`Found ${localChats.length} local chats`);
-
-      if (localChats.length > 0) {
-        // Create a response object with the local data
-        const response: ChatsResponse = {
-          status: 'success',
-          data: {
-            chats: localChats,
-            pagination: {
-              total: localChats.length,
-              per_page: 20,
-              current_page: 1,
-              last_page: 1
-            }
-          }
-        };
-
-        this.currentPage = 1;
-        this.lastPage = 1;
-
-        return response;
-      } else {
-        console.log('No local chats found');
-        return null;
-      }
-    } catch (error) {
-      console.error('Error in fetchChats:', error);
-      return null;
-    } finally {
-      this.isLoading = false;
-    }
-  }
-
-  // Function to fetch the next page of chats
-  async fetchNextPage(): Promise<ChatsResponse | null> {
-    if (this.isLoading || this.currentPage >= this.lastPage) {
-      return null;
-    }
-
-    return this.fetchChats(this.currentPage + 1);
-  }
-
-  // Function to check if there are more pages
-  hasMorePages(): boolean {
-    return this.currentPage < this.lastPage;
-  }
-
-  // Function to get the current page
-  getCurrentPage(): number {
-    return this.currentPage;
-  }
-
-  // Function to reset the pagination
-  resetPagination(): void {
-    this.currentPage = 1;
-  }
-
-  // Initialize pagination for a specific chat
-  private initChatPagination(chatId: number, pagination: Pagination): void {
-    this.chatPagination.set(chatId, {
-      currentPage: pagination.current_page,
-      lastPage: pagination.last_page,
-      isLoading: false
-    });
-  }
-
-  // Get pagination info for a specific chat
-  getChatPagination(chatId: number): { currentPage: number; lastPage: number; isLoading: boolean } | null {
-    return this.chatPagination.get(chatId) || null;
-  }
-
-  // Check if there are more pages for a specific chat
-  hasMoreMessagesForChat(chatId: number): boolean {
-    const pagination = this.chatPagination.get(chatId);
-    return pagination ? pagination.currentPage < pagination.lastPage : false;
-  }
-
-  // Load more messages for a specific chat
-  async loadMoreMessagesForChat(chatId: number): Promise<Message[] | null> {
-    const pagination = this.chatPagination.get(chatId);
-
-    if (!pagination || pagination.isLoading || pagination.currentPage >= pagination.lastPage) {
-      return null;
-    }
-
-    // Set loading state
-    pagination.isLoading = true;
-    this.chatPagination.set(chatId, pagination);
-
-    try {
-      const nextPage = pagination.currentPage + 1;
-      const response = await this.fetchChatById(chatId, nextPage);
-
-      if (response && response.status === 'success') {
-        // Update pagination
-        pagination.currentPage = response.data.pagination.current_page;
-        pagination.lastPage = response.data.pagination.last_page;
-        pagination.isLoading = false;
-        this.chatPagination.set(chatId, pagination);
-
-        // Store messages in SQLite for offline access
-        await sqliteService.saveMessages(chatId, response.data.messages);
-
-        return response.data.messages;
-      }
-
-      return null;
-    } catch (error) {
-      console.error(`Error loading more messages for chat ${chatId}:`, error);
-
-      // Reset loading state
-      pagination.isLoading = false;
-      this.chatPagination.set(chatId, pagination);
-
-      return null;
-    }
-  }
-
-  // Modified fetchChatById to use message-based pagination
-  async fetchChatById(chatId: number, beforeMessageId?: number): Promise<ChatDetailResponse | null> {
-    try {
-      // Check network connectivity
-      const netInfo = await NetInfo.fetch();
-      const isConnected = netInfo.isConnected && netInfo.isInternetReachable;
-
-      // If online, try API call first
-      if (isConnected) {
-        try {
-          if (await this.setAuthHeader()) {
-            // Make the API call with or without the before_message_id parameter
-            let url = `/api/v1/chats/${chatId}`;
-            if (beforeMessageId) {
-              url += `?before_message_id=${beforeMessageId}`;
-            }
-
-            const response = await axios.get(url);
-
-            if (response.data.status === 'success') {
-              // Store chat in SQLite for offline access
-              await sqliteService.saveChat(response.data.data.chat);
-
-              // Store messages in SQLite for offline access
-              await sqliteService.saveMessages(chatId, response.data.data.messages);
-
-              return response.data;
-            }
-          }
-        } catch (apiError) {
-          console.error(`API call failed for chat ${chatId}, falling back to local data:`, apiError);
-        }
-      }
-
-      // If offline or API failed, try to get chat from SQLite
-      console.log(`Fetching chat ${chatId} from local database`);
-      const localChat = await sqliteService.getChatById(chatId);
-
-      if (localChat) {
-        const localMessages = await sqliteService.getMessagesForChat(chatId);
-
-        // Create a response object with the local data
-        const response: ChatDetailResponse = {
-          status: 'success',
-          data: {
-            chat: localChat,
-            messages: localMessages,
-            pagination: {
-              total: localMessages.length,
-              loaded: localMessages.length,
-              has_more: false,
-              oldest_message_id: localMessages.length > 0 ? Math.min(...localMessages.map(m => m.id)) : 0
-            }
-          }
-        };
-
-        return response;
-      } else {
-        console.log(`No local chat found for ID ${chatId}`);
-        return null;
-      }
-    } catch (error) {
-      console.error(`Error fetching chat ${chatId}:`, error);
-      return null;
-    }
-  }
-
-  // Load older messages for a chat using before_message_id
-  async loadOlderMessages(chatId: number, oldestMessageId: number): Promise<ChatDetailResponse | null> {
-    try {
-      // Check network connectivity
-      const netInfo = await NetInfo.fetch();
-      const isConnected = netInfo.isConnected && netInfo.isInternetReachable;
-
-      if (!isConnected) {
-        console.log('Cannot load older messages while offline');
-        return null;
-      }
-
-      // Make the API call with before_message_id parameter
-      if (await this.setAuthHeader()) {
-        const response = await axios.get(`/api/v1/chats/${chatId}?before_message_id=${oldestMessageId}`);
-
-        if (response.data.status === 'success') {
-          // Store messages in SQLite for offline access
-          await sqliteService.saveMessages(chatId, response.data.data.messages);
-
-          return response.data;
-        }
-      }
-
-      return null;
-    } catch (error) {
-      console.error(`Error loading older messages for chat ${chatId}:`, error);
-      return null;
-    }
-  }
-
-  // Function to send a message to a chat
-  async sendMessage(
-    chatId: number,
-    content?: string,
-    media_url?: string,
-    message_type: string = 'text',
-    media_data?: any,
-    reply_to_message_id?: number
-  ): Promise<SendMessageResponse | null> {
-    try {
-      // Check network connectivity
-      const netInfo = await NetInfo.fetch();
-      const isConnected = netInfo.isConnected && netInfo.isInternetReachable;
-
-      // If offline, store the message locally with a pending status
-      if (!isConnected) {
-        console.log(`Offline mode: storing message for chat ${chatId} locally`);
-
-        // Create a temporary message with a pending status
-        const tempMessage: Message = {
-          id: Date.now(), // Temporary ID that will be replaced when online
-          chat_id: chatId,
-          sender_id: 503, // Assuming current user ID is 503 based on the API response example
-          reply_to_message_id: reply_to_message_id || null,
-          content: content || '',
-          message_type: message_type,
-          media_data: media_data || null,
-          media_url: media_url || null,
-          thumbnail_url: null,
-          status: 'pending', // Mark as pending for sync later
-          is_edited: false,
-          edited_at: null,
-          sent_at: new Date().toISOString(),
-          deleted_at: null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-          is_mine: true,
-          sender: {
-            id: 503,
-            email: "user@example.com" // Placeholder email
-          }
-        };
-
-        // Store the message in SQLite
-        await sqliteService.saveMessages(chatId, [tempMessage]);
-
-        // Create a response object with the local data
-        const response: SendMessageResponse = {
-          status: 'success',
-          message: 'Message stored locally and will be sent when online',
-          data: {
-            message: tempMessage
-          }
-        };
-
-        // TODO: Add to a message queue for sending when back online
-        // This would require additional implementation for background sync
-
-        return response;
-      }
-
-      // If online, proceed with API call
-      if (!(await this.setAuthHeader())) {
-        return null;
-      }
-
-      // Prepare the request body
-      const requestBody: any = {
-        message_type
-      };
-
-      // Add optional parameters if they exist
-      if (content) requestBody.content = content;
-      if (media_url) requestBody.media_url = media_url;
-      if (media_data) requestBody.media_data = media_data;
-      if (reply_to_message_id) requestBody.reply_to_message_id = reply_to_message_id;
-
-      // Make the API call
-      const response = await axios.post(`/api/v1/chats/${chatId}/messages`, requestBody);
+      });
 
       if (response.data.status === 'success') {
-        // Store the sent message in SQLite
-        const sentMessage = response.data.data.message;
-        sentMessage.is_mine = true; // Mark as mine since we sent it
+        const chatsData = response.data.data;
 
-        await sqliteService.saveMessages(chatId, [sentMessage]);
+        // Store chats in SQLite for offline access
+        await sqliteService.storeChats(chatsData.chats);
 
         return response.data;
       }
 
       return null;
     } catch (error) {
-      console.error(`Error sending message to chat ${chatId}:`, error);
+      console.error('Error fetching chats:', error);
 
-      // Create a failed message to return to the UI
-      const failedMessage: Message = {
-        id: Date.now(), // Temporary ID
-        chat_id: chatId,
-        sender_id: 503, // Assuming current user ID is 503
-        reply_to_message_id: reply_to_message_id || null,
-        content: content || '',
-        message_type: message_type,
-        media_data: media_data || null,
-        media_url: media_url || null,
-        thumbnail_url: null,
-        status: 'failed', // Mark as failed
-        is_edited: false,
-        edited_at: null,
-        sent_at: new Date().toISOString(),
-        deleted_at: null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-        is_mine: true,
-        sender: {
-          id: 503,
-          email: "user@example.com" // Placeholder email
-        }
-      };
-
-      // Store the failed message in SQLite
-      try {
-        await sqliteService.saveMessages(chatId, [failedMessage]);
-      } catch (sqliteError) {
-        console.error('Error storing failed message in local database:', sqliteError);
+      // Try to get offline data if API call fails
+      const offlineChats = await sqliteService.getChats();
+      if (offlineChats && offlineChats.length > 0) {
+        return {
+          status: 'success',
+          data: {
+            chats: offlineChats,
+            pagination: {
+              total: offlineChats.length,
+              per_page: 10,
+              current_page: 1,
+              last_page: 1
+            }
+          }
+        };
       }
 
-      // Create a response object with the failed message
-      const failedResponse: SendMessageResponse = {
-        status: 'error',
-        message: 'Failed to send message',
-        data: {
-          message: failedMessage
-        }
-      };
+      throw error;
+    }
+  }
 
-      return failedResponse;
+  async getChatDetails(chatId: number, page: number = 1): Promise<ChatDetailResponse | null> {
+    try {
+      const currentUserId = await this.getCurrentUser();
+      if (!currentUserId) {
+        throw new Error('Current user ID not found');
+      }
+
+      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
+
+      if (!isConnected) {
+        console.log('No internet connection, fetching from SQLite...');
+        const offlineChat = await sqliteService.getChatById(chatId);
+        const offlineMessages = await sqliteService.getMessagesByChatId(chatId);
+
+        if (offlineChat && offlineMessages) {
+          // Add ownership to messages
+          const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
+
+          return {
+            status: 'success',
+            data: {
+              chat: offlineChat,
+              messages: messagesWithOwnership,
+              pagination: {
+                total: messagesWithOwnership.length,
+                loaded: messagesWithOwnership.length,
+                has_more: false,
+                oldest_message_id: messagesWithOwnership[0]?.id || 0
+              }
+            }
+          };
+        }
+      }
+
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+        },
+        params: {
+          page,
+          per_page: 20
+        }
+      });
+
+      if (response.data.status === 'success') {
+        const chatData = response.data.data;
+
+        // Add ownership to messages based on current user ID
+        const messagesWithOwnership = addMessageOwnership(chatData.messages, currentUserId);
+
+        // Store data in SQLite for offline access
+        await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
+
+        return {
+          ...response.data,
+          data: {
+            ...chatData,
+            messages: messagesWithOwnership
+          }
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error fetching chat details:', error);
+
+      // Try to get offline data if API call fails
+      const currentUserId = await this.getCurrentUser();
+      if (currentUserId) {
+        const offlineChat = await sqliteService.getChatById(chatId);
+        const offlineMessages = await sqliteService.getMessagesByChatId(chatId);
+
+        if (offlineChat && offlineMessages) {
+          const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
+
+          return {
+            status: 'success',
+            data: {
+              chat: offlineChat,
+              messages: messagesWithOwnership,
+              pagination: {
+                total: messagesWithOwnership.length,
+                loaded: messagesWithOwnership.length,
+                has_more: false,
+                oldest_message_id: messagesWithOwnership[0]?.id || 0
+              }
+            }
+          };
+        }
+      }
+
+      throw error;
+    }
+  }
+
+  async sendMessage(chatId: number, content: string, messageType: string = 'text', mediaUrl?: string): Promise<SendMessageResponse | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const currentUserId = await this.getCurrentUser();
+      if (!currentUserId) {
+        throw new Error('Current user ID not found');
+      }
+
+      const response = await axios.post(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, {
+        content,
+        message_type: messageType,
+        media_url: mediaUrl
+      }, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (response.data.status === 'success') {
+        const message = response.data.data.message;
+
+        // Add ownership to the sent message
+        const messageWithOwnership = {
+          ...message,
+          is_mine: message.sender_id === currentUserId
+        };
+
+        // Store message in SQLite
+        await sqliteService.storeMessage(messageWithOwnership);
+
+        return {
+          ...response.data,
+          data: {
+            message: messageWithOwnership
+          }
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error sending message:', error);
+      throw error;
+    }
+  }
+
+  async loadMoreMessages(chatId: number, oldestMessageId: number): Promise<Message[] | null> {
+    try {
+      const currentUserId = await this.getCurrentUser();
+      if (!currentUserId) {
+        throw new Error('Current user ID not found');
+      }
+
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+        },
+        params: {
+          before: oldestMessageId,
+          per_page: 20
+        }
+      });
+
+      if (response.data.status === 'success') {
+        const messages = response.data.data.messages;
+
+        // Add ownership to messages
+        const messagesWithOwnership = addMessageOwnership(messages, currentUserId);
+
+        // Store messages in SQLite
+        for (const message of messagesWithOwnership) {
+          await sqliteService.storeMessage(message);
+        }
+
+        return messagesWithOwnership;
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error loading more messages:', error);
+      throw error;
     }
   }
 }
 
-// Export a singleton instance of the service
 export const chatsService = new ChatsService();

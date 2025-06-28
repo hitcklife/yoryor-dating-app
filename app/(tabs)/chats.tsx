@@ -188,7 +188,7 @@ export default function ChatsScreen() {
       }
       setError(null);
 
-      const response = await chatsService.fetchChats();
+      const response = await chatsService.getChats();
 
       if (response && response.status === 'success') {
         setChats(response.data.chats);

@@ -30,7 +30,7 @@ import {
   Center,
 } from "@gluestack-ui/themed";
 import { useColorScheme } from "nativewind";
-import { chatsService, Chat, Message, getProfilePhotoUrl } from "@/services/chats-service";
+import {chatsService, Chat, Message, getProfilePhotoUrl, getCurrentUserId} from "@/services/chats-service";
 import { sqliteService } from "@/services/sqlite-service";
 import { webSocketService } from "@/services/websocket-service";
 import { agoraService } from "@/services/agora-service";
@@ -121,7 +121,7 @@ export default function ChatScreen() {
       setLoading(true);
       setError(null);
 
-      const response = await chatsService.fetchChatById(chatId);
+      const response = await chatsService.getChatDetails(chatId);
 
       if (response && response.status === 'success') {
         setChat(response.data.chat);
@@ -172,6 +172,19 @@ export default function ChatScreen() {
   useEffect(() => {
     fetchChatData();
   }, [chatId]);
+
+  useEffect(() => {
+    const initializeWebSocket = async () => {
+      const currentUserId = await getCurrentUserId();
+      if (currentUserId) {
+        webSocketService.setCurrentUserId(currentUserId);
+        await webSocketService.initialize();
+      }
+    };
+
+    initializeWebSocket();
+  }, []);
+
 
   // Initialize WebSocket connection and subscribe to chat channel
   useEffect(() => {

@@ -220,6 +220,353 @@ class SQLiteService {
     }
   }
 
+
+  /**
+   * Store chat details (chat + messages) to the local database
+   * @param chat The chat to store
+   * @param messages The messages to store
+   */
+  async storeChatDetails(chat: Chat, messages: Message[]): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.withTransactionAsync(async () => {
+        // Save the chat (without transaction inside since we're already in one)
+        await this.db!.runAsync(`
+          INSERT OR REPLACE INTO chats (
+            id, type, name, description, last_activity_at, is_active, 
+            created_at, updated_at, deleted_at, unread_count,
+            pivot_chat_id, pivot_user_id, pivot_is_muted, pivot_last_read_at,
+            pivot_joined_at, pivot_left_at, pivot_role, pivot_created_at, pivot_updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          chat.id,
+          chat.type,
+          chat.name,
+          chat.description,
+          chat.last_activity_at,
+          chat.is_active ? 1 : 0,
+          chat.created_at,
+          chat.updated_at,
+          chat.deleted_at,
+          chat.unread_count,
+          chat.pivot.chat_id,
+          chat.pivot.user_id,
+          chat.pivot.is_muted ? 1 : 0,
+          chat.pivot.last_read_at,
+          chat.pivot.joined_at,
+          chat.pivot.left_at,
+          chat.pivot.role,
+          chat.pivot.created_at,
+          chat.pivot.updated_at
+        ]);
+
+        // Save other user if exists
+        if (chat.other_user) {
+          await this.saveOtherUserInternal(chat.id, chat.other_user);
+        }
+
+        // Save all messages
+        for (const message of messages) {
+          await this.saveMessageInternal(message);
+        }
+      });
+      console.log(`Chat details for chat ${chat.id} stored successfully`);
+    } catch (error) {
+      console.error('Error storing chat details:', error);
+      throw error;
+    }
+  }
+
+
+  /**
+   * Get messages by chat ID
+   * @param chatId The chat ID to get messages for
+   * @returns Array of messages
+   */
+  async getMessagesByChatId(chatId: number): Promise<Message[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const messages = await this.db.getAllAsync<any>(`
+        SELECT * FROM messages 
+        WHERE chat_id = ? AND deleted_at IS NULL 
+        ORDER BY sent_at ASC
+      `, [chatId]);
+
+      return messages.map(msg => ({
+        id: msg.id,
+        chat_id: msg.chat_id,
+        sender_id: msg.sender_id,
+        reply_to_message_id: msg.reply_to_message_id,
+        content: msg.content,
+        message_type: msg.message_type,
+        media_data: msg.media_data ? JSON.parse(msg.media_data) : null,
+        media_url: msg.media_url,
+        thumbnail_url: msg.thumbnail_url,
+        status: msg.status,
+        is_edited: msg.is_edited === 1,
+        edited_at: msg.edited_at,
+        sent_at: msg.sent_at,
+        deleted_at: msg.deleted_at,
+        created_at: msg.created_at,
+        updated_at: msg.updated_at,
+        is_mine: msg.is_mine === 1,
+        sender: msg.sender_email ? {
+          id: msg.sender_id,
+          email: msg.sender_email
+        } : undefined
+      }));
+    } catch (error) {
+      console.error('Error getting messages by chat ID:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Store multiple chats in the database
+   * @param chats Array of chats to store
+   */
+  async storeChats(chats: Chat[]): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.withTransactionAsync(async () => {
+        for (const chat of chats) {
+          // Save chat without nested transaction
+          await this.db!.runAsync(`
+            INSERT OR REPLACE INTO chats (
+              id, type, name, description, last_activity_at, is_active, 
+              created_at, updated_at, deleted_at, unread_count,
+              pivot_chat_id, pivot_user_id, pivot_is_muted, pivot_last_read_at,
+              pivot_joined_at, pivot_left_at, pivot_role, pivot_created_at, pivot_updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            chat.id,
+            chat.type,
+            chat.name,
+            chat.description,
+            chat.last_activity_at,
+            chat.is_active ? 1 : 0,
+            chat.created_at,
+            chat.updated_at,
+            chat.deleted_at,
+            chat.unread_count,
+            chat.pivot.chat_id,
+            chat.pivot.user_id,
+            chat.pivot.is_muted ? 1 : 0,
+            chat.pivot.last_read_at,
+            chat.pivot.joined_at,
+            chat.pivot.left_at,
+            chat.pivot.role,
+            chat.pivot.created_at,
+            chat.pivot.updated_at
+          ]);
+
+          // Save other user if exists
+          if (chat.other_user) {
+            await this.saveOtherUserInternal(chat.id, chat.other_user);
+          }
+
+          // Save last message if exists
+          if (chat.last_message) {
+            await this.saveMessageInternal(chat.last_message);
+          }
+        }
+      });
+      console.log(`${chats.length} chats stored successfully`);
+    } catch (error) {
+      console.error('Error storing chats:', error);
+      throw error;
+    }
+  }
+
+
+  /**
+   * Internal method to save message (without transaction)
+   * @param message The message to save
+   */
+  private async saveMessageInternal(message: Message): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    await this.db.runAsync(`
+      INSERT OR REPLACE INTO messages (
+        id, chat_id, sender_id, reply_to_message_id, content,
+        message_type, media_data, media_url, thumbnail_url,
+        status, is_edited, edited_at, sent_at, deleted_at,
+        created_at, updated_at, is_mine, sender_email
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      message.id,
+      message.chat_id,
+      message.sender_id,
+      message.reply_to_message_id,
+      message.content,
+      message.message_type,
+      message.media_data ? JSON.stringify(message.media_data) : null,
+      message.media_url,
+      message.thumbnail_url,
+      message.status,
+      message.is_edited ? 1 : 0,
+      message.edited_at,
+      message.sent_at,
+      message.deleted_at,
+      message.created_at,
+      message.updated_at,
+      message.is_mine ? 1 : 0,
+      message.sender?.email
+    ]);
+  }
+
+
+
+  /**
+   * Internal method to save other user (without transaction)
+   * @param chatId The chat ID this user belongs to
+   * @param user The user to save
+   */
+  private async saveOtherUserInternal(chatId: number, user: OtherUser): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    await this.db.runAsync(`
+      INSERT OR REPLACE INTO other_users (
+        id, chat_id, email, phone, google_id, facebook_id, email_verified_at,
+        phone_verified_at, disabled_at, registration_completed, is_admin,
+        is_private, profile_photo_path, last_active_at, deleted_at,
+        created_at, updated_at, two_factor_enabled, last_login_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      user.id,
+      chatId,
+      user.email,
+      user.phone,
+      user.google_id,
+      user.facebook_id,
+      user.email_verified_at,
+      user.phone_verified_at,
+      user.disabled_at,
+      user.registration_completed ? 1 : 0,
+      user.is_admin ? 1 : 0,
+      user.is_private ? 1 : 0,
+      user.profile_photo_path,
+      user.last_active_at,
+      user.deleted_at,
+      user.created_at,
+      user.updated_at,
+      user.two_factor_enabled ? 1 : 0,
+      user.last_login_at
+    ]);
+
+    // Save profile if exists
+    if (user.profile) {
+      await this.saveProfileInternal(user.id, user.profile);
+    }
+
+    // Save profile photo if exists
+    if (user.profile_photo) {
+      await this.saveProfilePhotoInternal(user.id, user.profile_photo);
+    }
+  }
+
+
+  /**
+   * Internal method to save profile (without transaction)
+   * @param userId The user ID this profile belongs to
+   * @param profile The profile to save
+   */
+  private async saveProfileInternal(userId: number, profile: Profile): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    await this.db.runAsync(`
+      INSERT OR REPLACE INTO profiles (
+        id, user_id, first_name, last_name, gender, date_of_birth,
+        age, city, state, province, country_id, latitude, longitude,
+        bio, interests, looking_for, profile_views, profile_completed_at,
+        status, occupation, profession, country_code, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      profile.id,
+      userId,
+      profile.first_name,
+      profile.last_name,
+      profile.gender,
+      profile.date_of_birth,
+      profile.age,
+      profile.city,
+      profile.state,
+      profile.province,
+      profile.country_id,
+      profile.latitude,
+      profile.longitude,
+      profile.bio,
+      JSON.stringify(profile.interests),
+      profile.looking_for,
+      profile.profile_views,
+      profile.profile_completed_at,
+      profile.status,
+      profile.occupation,
+      profile.profession,
+      profile.country_code,
+      profile.created_at,
+      profile.updated_at
+    ]);
+  }
+
+
+  /**
+   * Internal method to save profile photo (without transaction)
+   * @param userId The user ID this photo belongs to
+   * @param photo The profile photo to save
+   */
+  private async saveProfilePhotoInternal(userId: number, photo: ProfilePhoto): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    await this.db.runAsync(`
+      INSERT OR REPLACE INTO profile_photos (
+        id, user_id, original_url, thumbnail_url, medium_url,
+        is_profile_photo, order_num, is_private, is_verified,
+        status, rejection_reason, metadata, uploaded_at,
+        deleted_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      photo.id,
+      userId,
+      photo.original_url,
+      photo.thumbnail_url,
+      photo.medium_url,
+      photo.is_profile_photo ? 1 : 0,
+      photo.order,
+      photo.is_private ? 1 : 0,
+      photo.is_verified ? 1 : 0,
+      photo.status,
+      photo.rejection_reason,
+      photo.metadata ? JSON.stringify(photo.metadata) : null,
+      photo.uploaded_at,
+      photo.deleted_at,
+      photo.created_at,
+      photo.updated_at
+    ]);
+  }
+
+
+
+  /**
+   * Store a single message in the database
+   * @param message The message to store
+   */
+  async storeMessage(message: Message): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.saveMessage(message);
+      console.log(`Message ${message.id} stored successfully`);
+    } catch (error) {
+      console.error('Error storing message:', error);
+      throw error;
+    }
+  }
+
+
   /**
    * Create the version table
    */
@@ -256,54 +603,53 @@ class SQLiteService {
     if (!this.db) throw new Error('Database not initialized');
 
     try {
-      await this.db.withTransactionAsync(async () => {
-        // Insert or update chat
-        await this.db!.runAsync(`
-          INSERT OR REPLACE INTO chats (
-            id, type, name, description, last_activity_at, is_active, 
-            created_at, updated_at, deleted_at, unread_count,
-            pivot_chat_id, pivot_user_id, pivot_is_muted, pivot_last_read_at,
-            pivot_joined_at, pivot_left_at, pivot_role, pivot_created_at, pivot_updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [
-          chat.id,
-          chat.type,
-          chat.name,
-          chat.description,
-          chat.last_activity_at,
-          chat.is_active ? 1 : 0,
-          chat.created_at,
-          chat.updated_at,
-          chat.deleted_at,
-          chat.unread_count,
-          chat.pivot.chat_id,
-          chat.pivot.user_id,
-          chat.pivot.is_muted ? 1 : 0,
-          chat.pivot.last_read_at,
-          chat.pivot.joined_at,
-          chat.pivot.left_at,
-          chat.pivot.role,
-          chat.pivot.created_at,
-          chat.pivot.updated_at
-        ]);
+      // Insert or update chat
+      await this.db.runAsync(`
+        INSERT OR REPLACE INTO chats (
+          id, type, name, description, last_activity_at, is_active, 
+          created_at, updated_at, deleted_at, unread_count,
+          pivot_chat_id, pivot_user_id, pivot_is_muted, pivot_last_read_at,
+          pivot_joined_at, pivot_left_at, pivot_role, pivot_created_at, pivot_updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        chat.id,
+        chat.type,
+        chat.name,
+        chat.description,
+        chat.last_activity_at,
+        chat.is_active ? 1 : 0,
+        chat.created_at,
+        chat.updated_at,
+        chat.deleted_at,
+        chat.unread_count,
+        chat.pivot.chat_id,
+        chat.pivot.user_id,
+        chat.pivot.is_muted ? 1 : 0,
+        chat.pivot.last_read_at,
+        chat.pivot.joined_at,
+        chat.pivot.left_at,
+        chat.pivot.role,
+        chat.pivot.created_at,
+        chat.pivot.updated_at
+      ]);
 
-        console.log(`Chat ${chat.id} saved successfully`);
+      console.log(`Chat ${chat.id} saved successfully`);
 
-        // Save other user
-        if (chat.other_user) {
-          await this.saveOtherUser(chat.id, chat.other_user);
-        }
+      // Save other user
+      if (chat.other_user) {
+        await this.saveOtherUser(chat.id, chat.other_user);
+      }
 
-        // Save last message if exists
-        if (chat.last_message) {
-          await this.saveMessage(chat.last_message);
-        }
-      });
+      // Save last message if exists
+      if (chat.last_message) {
+        await this.saveMessage(chat.last_message);
+      }
     } catch (error) {
       console.error('Error saving chat:', error);
       throw error;
     }
   }
+
 
   /**
    * Save an other user to the local database
@@ -441,7 +787,7 @@ class SQLiteService {
    * Save a message to the local database
    * @param message The message to save
    */
-  private async saveMessage(message: Message): Promise<void> {
+  async saveMessage(message: Message): Promise<void> {
     if (!this.db) throw new Error('Database not initialized');
 
     await this.db.runAsync(`

@@ -4,18 +4,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 
 // Define the base URL for the API
-// Replace this with your Laravel backend URL
 const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
 
 // Pusher configuration
-// These values should be replaced with your actual Pusher credentials from your Laravel Pusher setup
 const PUSHER_CONFIG = {
-  key: '71d10c58900cc58fb02d',      // Replace with your Pusher app key from Laravel .env (PUSHER_APP_KEY)
-  cluster: 'us2',      // Replace with your Pusher cluster from Laravel .env (PUSHER_APP_CLUSTER)
-  forceTLS: true,      // Use TLS for secure connections
+  key: '71d10c58900cc58fb02d',
+  cluster: 'us2',
+  forceTLS: true,
 };
 
-// Initialize Pusher and Echo
 class WebSocketService {
   private echo: Echo | null = null;
   private pusherClient: Pusher | null = null;
@@ -25,6 +22,36 @@ class WebSocketService {
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
   private reconnectTimeout: number = null;
+  private currentUserId: number | null = null;
+
+  /**
+   * Set the current user ID
+   */
+  setCurrentUserId(userId: number): void {
+    this.currentUserId = userId;
+  }
+
+  /**
+   * Get current user ID from AsyncStorage
+   */
+  private async getCurrentUserId(): Promise<number | null> {
+    try {
+      if (this.currentUserId) {
+        return this.currentUserId;
+      }
+
+      const userData = await AsyncStorage.getItem('user_data');
+      if (userData) {
+        const user = JSON.parse(userData);
+        this.currentUserId = user.id;
+        return user.id;
+      }
+      return null;
+    } catch (error) {
+      console.error('Error getting current user ID:', error);
+      return null;
+    }
+  }
 
   /**
    * Initialize the WebSocket service with Pusher
@@ -47,6 +74,9 @@ class WebSocketService {
         console.error('No auth token found for WebSocket initialization');
         throw new Error('No auth token found');
       }
+
+      // Get current user ID
+      await this.getCurrentUserId();
 
       // Initialize Pusher client first
       this.pusherClient = new Pusher(PUSHER_CONFIG.key, {
@@ -93,7 +123,7 @@ class WebSocketService {
         key: PUSHER_CONFIG.key,
         cluster: PUSHER_CONFIG.cluster,
         forceTLS: PUSHER_CONFIG.forceTLS,
-        client: this.pusherClient, // Use the pre-configured client
+        client: this.pusherClient,
         authorizer: (channel: any) => {
           return {
             authorize: (socketId: string, callback: Function) => {
@@ -121,18 +151,13 @@ class WebSocketService {
       console.log('WebSocket service initialized successfully');
     } catch (error) {
       console.error('Error initializing WebSocket service:', error);
-
-      // Call all error callbacks
       this.errorCallbacks.forEach(callback => callback(error));
-
-      // Attempt to reconnect
       this.attemptReconnect();
     }
   }
 
   /**
    * Attempt to reconnect to the WebSocket service
-   * @private
    */
   private attemptReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
@@ -142,7 +167,7 @@ class WebSocketService {
 
     this.reconnectAttempts++;
 
-    const delay = Math.min(2000 * this.reconnectAttempts, 30000); // Linear backoff with max 30s
+    const delay = Math.min(2000 * this.reconnectAttempts, 30000);
     console.log(`Attempting to reconnect in ${delay / 1000} seconds (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
 
     this.reconnectTimeout = setTimeout(() => {
@@ -153,10 +178,6 @@ class WebSocketService {
 
   /**
    * Subscribe to a private chat channel
-   * @param chatId The ID of the chat to subscribe to
-   * @param onMessage Callback function for new messages
-   * @param onTyping Callback function for typing indicators
-   * @returns The channel subscription
    */
   subscribeToChat(
     chatId: number,
@@ -166,7 +187,6 @@ class WebSocketService {
     if (!this.initialized || !this.echo) {
       console.warn('WebSocket service not initialized. Adding to queue...');
 
-      // Add a callback to subscribe once connected
       this.connectionCallbacks.push(() => {
         this.subscribeToChat(chatId, onMessage, onTyping);
       });
@@ -175,23 +195,26 @@ class WebSocketService {
     }
 
     try {
-      // Subscribe to the private chat channel
       const channel = this.echo.private(`chat.${chatId}`);
 
       // Listen for new messages
-      channel.listen('.MessageSent', (e: any) => {
+      channel.listen('.MessageSent', async (e: any) => {
         console.log('New message received:', e);
-        // Get the current user ID (hardcoded as 503 based on chats-service.ts)
-        const currentUserId = 503;
 
-        // Check if the message object exists
-        if (e.message) {
+        // Get the current user ID
+        const currentUserId = await this.getCurrentUserId();
+
+        if (e.message && currentUserId) {
           // Add is_mine property based on sender_id
-          e.message.is_mine = e.message.sender_id === currentUserId;
-          onMessage(e.message);
+          const messageWithOwnership = {
+            ...e.message,
+            is_mine: e.message.sender_id === currentUserId
+          };
+
+          onMessage(messageWithOwnership);
         } else {
-          // Fallback to just passing content if message object doesn't exist
-          onMessage(e.content);
+          console.warn('Message or current user ID not available');
+          onMessage(e.message);
         }
       });
 
@@ -199,119 +222,104 @@ class WebSocketService {
       if (onTyping) {
         channel.listenForWhisper('typing', (e: any) => {
           console.log('User typing:', e);
-          onTyping(e.user);
+          onTyping(e);
         });
       }
 
       console.log(`Subscribed to chat channel: chat.${chatId}`);
       return channel;
+
     } catch (error) {
-      console.error(`Error subscribing to chat ${chatId}:`, error);
+      console.error('Error subscribing to chat:', error);
       return null;
     }
   }
 
   /**
-   * Send a typing indicator to the chat channel
-   * @param chatId The ID of the chat
-   * @param user The user who is typing
+   * Send typing indicator
    */
-  sendTypingIndicator(chatId: number, user: any): void {
+  sendTyping(chatId: number, isTyping: boolean): void {
     if (!this.initialized || !this.echo) {
-      console.warn('WebSocket service not initialized. Cannot send typing indicator.');
+      console.warn('WebSocket service not initialized');
       return;
     }
 
     try {
       const channel = this.echo.private(`chat.${chatId}`);
-
-      // Whisper the typing event to the channel
-      channel.whisper('typing', { user });
-
-      console.log(`Sent typing indicator to chat.${chatId}`);
+      channel.whisper('typing', {
+        typing: isTyping,
+        user_id: this.currentUserId
+      });
     } catch (error) {
-      console.error(`Error sending typing indicator to chat ${chatId}:`, error);
+      console.error('Error sending typing indicator:', error);
     }
   }
 
   /**
-   * Unsubscribe from a channel
-   * @param channel The channel to unsubscribe from
+   * Unsubscribe from a chat channel
    */
-  unsubscribe(channel: any): void {
-    if (channel && this.echo) {
-      this.echo.leave(channel.name);
-      console.log(`Unsubscribed from channel: ${channel.name}`);
+  unsubscribeFromChat(chatId: number): void {
+    if (!this.echo) {
+      console.warn('WebSocket service not initialized');
+      return;
+    }
+
+    try {
+      this.echo.leave(`chat.${chatId}`);
+      console.log(`Unsubscribed from chat channel: chat.${chatId}`);
+    } catch (error) {
+      console.error('Error unsubscribing from chat:', error);
     }
   }
 
   /**
-   * Add a callback to be called when the connection is established
-   * @param callback The callback function
+   * Add connection callback
    */
-  onConnect(callback: () => void): void {
-    if (this.initialized) {
-      callback();
-    } else {
-      this.connectionCallbacks.push(callback);
-    }
+  onConnected(callback: () => void): void {
+    this.connectionCallbacks.push(callback);
   }
 
   /**
-   * Add a callback to be called when an error occurs
-   * @param callback The callback function
+   * Add error callback
    */
   onError(callback: (error: any) => void): void {
     this.errorCallbacks.push(callback);
   }
 
   /**
-   * Check if the service is connected
+   * Check if WebSocket is connected
    */
   isConnected(): boolean {
-    return this.initialized && this.pusherClient?.connection.state === 'connected';
+    return this.initialized;
   }
 
   /**
-   * Get current connection state
-   */
-  getConnectionState(): string {
-    return this.pusherClient?.connection.state || 'disconnected';
-  }
-
-  /**
-   * Disconnect from all channels and clean up resources
+   * Disconnect and cleanup
    */
   disconnect(): void {
-    // Clear any reconnect timeout
+    if (this.echo) {
+      this.echo.disconnect();
+    }
+
+    if (this.pusherClient) {
+      this.pusherClient.disconnect();
+    }
+
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
     }
 
-    // Disconnect Pusher client if initialized
-    if (this.pusherClient) {
-      // Remove all event listeners
-      this.pusherClient.connection.unbind_all();
-      this.pusherClient.disconnect();
-      this.pusherClient = null;
-    }
-
-    // Disconnect Echo if initialized
-    if (this.echo) {
-      this.echo.disconnect();
-      this.echo = null;
-    }
-
-    // Reset state
     this.initialized = false;
+    this.echo = null;
+    this.pusherClient = null;
+    this.currentUserId = null;
     this.connectionCallbacks = [];
     this.errorCallbacks = [];
     this.reconnectAttempts = 0;
 
-    console.log('WebSocket service disconnected and cleaned up');
+    console.log('WebSocket service disconnected');
   }
 }
 
-// Export a singleton instance of the service
 export const webSocketService = new WebSocketService();
