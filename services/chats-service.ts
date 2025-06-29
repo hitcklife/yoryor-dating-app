@@ -325,63 +325,84 @@ class ChatsService {
         throw new Error('Current user ID not found');
       }
 
+      // Always try SQLite first for better performance
+      const offlineChat = await sqliteService.getChatById(chatId);
+      const offlineMessages = await sqliteService.getMessagesByChatId(chatId);
+
       const isConnected = await NetInfo.fetch().then(state => state.isConnected);
 
-      if (!isConnected) {
-        console.log('No internet connection, fetching from SQLite...');
-        const offlineChat = await sqliteService.getChatById(chatId);
-        const offlineMessages = await sqliteService.getMessagesByChatId(chatId);
+      // If we have offline data and no internet, return it
+      if (!isConnected && offlineChat && offlineMessages) {
+        console.log('No internet connection, using SQLite data...');
+        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
 
-        if (offlineChat && offlineMessages) {
-          // Add ownership to messages
-          const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
+        return {
+          status: 'success',
+          data: {
+            chat: offlineChat,
+            messages: messagesWithOwnership,
+            pagination: {
+              total: messagesWithOwnership.length,
+              loaded: messagesWithOwnership.length,
+              has_more: false,
+              oldest_message_id: messagesWithOwnership[0]?.id || 0
+            }
+          }
+        };
+      }
+
+      // If we have internet, fetch fresh data only if we don't have recent local data
+      if (isConnected) {
+        const token = await AsyncStorage.getItem('auth_token');
+        if (!token) {
+          throw new Error('No auth token found');
+        }
+
+        const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}`, {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Accept': 'application/json',
+          },
+          params: {
+            page,
+            per_page: 20
+          }
+        });
+
+        if (response.data.status === 'success') {
+          const chatData = response.data.data;
+
+          // Add ownership to messages based on current user ID
+          const messagesWithOwnership = addMessageOwnership(chatData.messages, currentUserId);
+
+          // Store data in SQLite for offline access
+          await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
 
           return {
-            status: 'success',
+            ...response.data,
             data: {
-              chat: offlineChat,
-              messages: messagesWithOwnership,
-              pagination: {
-                total: messagesWithOwnership.length,
-                loaded: messagesWithOwnership.length,
-                has_more: false,
-                oldest_message_id: messagesWithOwnership[0]?.id || 0
-              }
+              ...chatData,
+              messages: messagesWithOwnership
             }
           };
         }
       }
 
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
-      const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-        },
-        params: {
-          page,
-          per_page: 20
-        }
-      });
-
-      if (response.data.status === 'success') {
-        const chatData = response.data.data;
-
-        // Add ownership to messages based on current user ID
-        const messagesWithOwnership = addMessageOwnership(chatData.messages, currentUserId);
-
-        // Store data in SQLite for offline access
-        await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
+      // Fallback to offline data if available
+      if (offlineChat && offlineMessages) {
+        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
 
         return {
-          ...response.data,
+          status: 'success',
           data: {
-            ...chatData,
-            messages: messagesWithOwnership
+            chat: offlineChat,
+            messages: messagesWithOwnership,
+            pagination: {
+              total: messagesWithOwnership.length,
+              loaded: messagesWithOwnership.length,
+              has_more: false,
+              oldest_message_id: messagesWithOwnership[0]?.id || 0
+            }
           }
         };
       }
@@ -419,7 +440,8 @@ class ChatsService {
     }
   }
 
-  async sendMessage(chatId: number, content: string, messageType: string = 'text', mediaUrl?: string): Promise<SendMessageResponse | null> {
+
+  async sendMessage(chatId: number, content: string, messageType: string = 'text', mediaUrl?: string, mediaData?: any, replyToMessageId?: number): Promise<SendMessageResponse | null> {
     try {
       const token = await AsyncStorage.getItem('auth_token');
       if (!token) {
@@ -434,7 +456,9 @@ class ChatsService {
       const response = await axios.post(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, {
         content,
         message_type: messageType,
-        media_url: mediaUrl
+        media_url: mediaUrl,
+        media_data: mediaData,
+        reply_to_message_id: replyToMessageId
       }, {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -470,11 +494,58 @@ class ChatsService {
     }
   }
 
-  async loadMoreMessages(chatId: number, oldestMessageId: number): Promise<Message[] | null> {
+  async loadMoreMessages(chatId: number, oldestMessageId: number): Promise<{
+    status: string;
+    data: { chat: any; messages: Message[]; pagination: any }
+  }> {
     try {
       const currentUserId = await this.getCurrentUser();
       if (!currentUserId) {
         throw new Error('Current user ID not found');
+      }
+
+      // First check if we have older messages in SQLite
+      const hasLocalMessages = await sqliteService.hasMessagesBeforeId(chatId, oldestMessageId);
+
+      if (hasLocalMessages) {
+        console.log('Loading older messages from SQLite...');
+        const localMessages = await sqliteService.getMessagesBeforeId(chatId, oldestMessageId, 20);
+
+        if (localMessages.length > 0) {
+          return {
+            status: 'success',
+            data: {
+              chat: null,
+              messages: localMessages,
+              pagination: {
+                total: localMessages.length,
+                loaded: localMessages.length,
+                has_more: localMessages.length === 20, // Assume more if we got full batch
+                oldest_message_id: localMessages[0]?.id || oldestMessageId
+              }
+            }
+          };
+        }
+      }
+
+      // If no local messages or need to fetch from server
+      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
+
+      if (!isConnected) {
+        // No internet and no local messages
+        return {
+          status: 'success',
+          data: {
+            chat: null,
+            messages: [],
+            pagination: {
+              total: 0,
+              loaded: 0,
+              has_more: false,
+              oldest_message_id: oldestMessageId
+            }
+          }
+        };
       }
 
       const token = await AsyncStorage.getItem('auth_token');
@@ -482,13 +553,14 @@ class ChatsService {
         throw new Error('No auth token found');
       }
 
-      const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, {
+      console.log('Fetching older messages from server...');
+      const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}`, {
         headers: {
           'Authorization': `Bearer ${token}`,
           'Accept': 'application/json',
         },
         params: {
-          before: oldestMessageId,
+          before_message_id: oldestMessageId,
           per_page: 20
         }
       });
@@ -499,20 +571,44 @@ class ChatsService {
         // Add ownership to messages
         const messagesWithOwnership = addMessageOwnership(messages, currentUserId);
 
-        // Store messages in SQLite
+        // Store only new messages in SQLite (avoid duplicates)
         for (const message of messagesWithOwnership) {
-          await sqliteService.storeMessage(message);
+          const exists = await sqliteService.messageExists(message.id);
+          if (!exists) {
+            await sqliteService.storeMessage(message);
+          }
         }
 
-        return messagesWithOwnership;
+        return {
+          status: 'success',
+          data: {
+            chat: response.data.data.chat,
+            messages: messagesWithOwnership,
+            pagination: response.data.data.pagination
+          }
+        };
       }
 
-      return null;
+      return {
+        status: 'success',
+        data: {
+          chat: null,
+          messages: [],
+          pagination: {
+            total: 0,
+            loaded: 0,
+            has_more: false,
+            oldest_message_id: oldestMessageId
+          }
+        }
+      };
+
     } catch (error) {
       console.error('Error loading more messages:', error);
       throw error;
     }
   }
+
 }
 
 export const chatsService = new ChatsService();

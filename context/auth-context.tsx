@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
+import sqliteService from "../services/sqlite-service";
 
 type User = {
     id: number;
@@ -308,6 +309,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await AsyncStorage.removeItem('user_data');
 
             delete axios.defaults.headers.common['Authorization'];
+
+            // Clear and delete the local SQLite database
+            try {
+                await sqliteService.clearDatabaseOnLogout();
+                console.log('SQLite database cleared successfully on logout');
+            } catch (sqliteError) {
+                console.error('Error clearing SQLite database on logout:', sqliteError);
+                // Continue with logout even if database clearing fails
+            }
 
             setUser(null);
             setStats(null);

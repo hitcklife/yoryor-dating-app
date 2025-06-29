@@ -2,6 +2,7 @@ import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
+import { notificationService } from './notification-service';
 
 // Define the base URL for the API
 const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
@@ -211,6 +212,23 @@ class WebSocketService {
             is_mine: e.message.sender_id === currentUserId
           };
 
+          // Show notification for incoming messages (not from current user)
+          if (!messageWithOwnership.is_mine) {
+            try {
+              // Get sender name from the message data
+              const senderName = e.sender?.name || 'New message';
+
+              // Show notification
+              await notificationService.showMessageNotification(
+                messageWithOwnership,
+                chatId.toString(),
+                senderName
+              );
+            } catch (error) {
+              console.error('Error showing notification:', error);
+            }
+          }
+
           onMessage(messageWithOwnership);
         } else {
           console.warn('Message or current user ID not available');
@@ -238,7 +256,7 @@ class WebSocketService {
   /**
    * Send typing indicator
    */
-  sendTyping(chatId: number, isTyping: boolean): void {
+  sendTyping(chatId: number, user: any): void {
     if (!this.initialized || !this.echo) {
       console.warn('WebSocket service not initialized');
       return;
@@ -246,10 +264,7 @@ class WebSocketService {
 
     try {
       const channel = this.echo.private(`chat.${chatId}`);
-      channel.whisper('typing', {
-        typing: isTyping,
-        user_id: this.currentUserId
-      });
+      channel.whisper('typing', user);
     } catch (error) {
       console.error('Error sending typing indicator:', error);
     }

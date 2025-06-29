@@ -19,6 +19,14 @@
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs access to your camera to enable video calls",
         "NSMicrophoneUsageDescription": "This app needs access to your microphone to enable voice and video calls"
+      },
+      "entitlements": {
+        "aps-environment": "development"
+      }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "f0228624-4b64-4543-a64a-7d0c30c19649"
       }
     },
     "android": {
@@ -43,7 +51,40 @@
       "expo-router",
       "expo-web-browser",
       "expo-sqlite",
-      "expo-camera"
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow $(PRODUCT_NAME) to access your camera",
+          "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone",
+          "recordAudioAndroid": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./local/assets/notification_icon.png",
+          "color": "#ffffff",
+          "defaultChannel": "default",
+          "sounds": [
+            "./local/assets/notification_sound.wav",
+            "./local/assets/notification_sound_other.wav"
+          ],
+          "enableBackgroundRemoteNotifications": false
+        }
+      ],
+      [
+        "expo-video",
+        {
+          "supportsBackgroundPlayback": true,
+          "supportsPictureInPicture": true
+        }
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow $(PRODUCT_NAME) to access your microphone."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

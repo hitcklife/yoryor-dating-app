@@ -7,6 +7,7 @@ import { useEffect } from 'react';
 import 'react-native-reanimated';
 import "@/global.css";
 import { AuthProvider } from "@/context/auth-context";
+import { notificationService } from '@/services/notification-service';
 
 import { useColorScheme } from '@/components/useColorScheme';
 import { GluestackUIProvider } from '@gluestack-ui/themed';
@@ -41,6 +42,23 @@ export default function RootLayout() {
     if (loaded) {
       SplashScreen.hideAsync();
     }
+  }, [loaded]);
+
+  // Initialize notification service
+  useEffect(() => {
+    if (loaded) {
+      // Initialize the notification service
+      notificationService.initialize().then(token => {
+        console.log('Notification service initialized with token:', token);
+      }).catch(error => {
+        console.error('Error initializing notification service:', error);
+      });
+    }
+
+    // Clean up notification listeners when component unmounts
+    return () => {
+      notificationService.cleanup();
+    };
   }, [loaded]);
 
   if (!loaded) {

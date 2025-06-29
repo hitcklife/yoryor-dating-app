@@ -1220,6 +1220,95 @@ class SQLiteService {
     }
   }
 
+
+
+  /**
+   * Check if messages exist for a chat before a specific message ID
+   * @param chatId The chat ID
+   * @param beforeMessageId The message ID to check before
+   * @returns boolean indicating if messages exist
+   */
+  async hasMessagesBeforeId(chatId: number, beforeMessageId: number): Promise<boolean> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const result = await this.db.getFirstAsync<{ count: number }>(`
+      SELECT COUNT(*) as count FROM messages 
+      WHERE chat_id = ? AND id < ? AND deleted_at IS NULL
+    `, [chatId, beforeMessageId]);
+
+      return (result?.count || 0) > 0;
+    } catch (error) {
+      console.error('Error checking messages before ID:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get messages before a specific message ID (for pagination)
+   * @param chatId The chat ID
+   * @param beforeMessageId The message ID to get messages before
+   * @param limit Number of messages to get
+   * @returns Array of messages
+   */
+  async getMessagesBeforeId(chatId: number, beforeMessageId: number, limit: number = 20): Promise<Message[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const messages = await this.db.getAllAsync<any>(`
+      SELECT * FROM messages 
+      WHERE chat_id = ? AND id < ? AND deleted_at IS NULL 
+      ORDER BY sent_at DESC
+      LIMIT ?
+    `, [chatId, beforeMessageId, limit]);
+
+      return messages.map(msg => ({
+        id: msg.id,
+        chat_id: msg.chat_id,
+        sender_id: msg.sender_id,
+        reply_to_message_id: msg.reply_to_message_id,
+        content: msg.content,
+        message_type: msg.message_type,
+        media_data: msg.media_data ? JSON.parse(msg.media_data) : null,
+        media_url: msg.media_url,
+        thumbnail_url: msg.thumbnail_url,
+        status: msg.status,
+        is_edited: msg.is_edited === 1,
+        edited_at: msg.edited_at,
+        sent_at: msg.sent_at,
+        deleted_at: msg.deleted_at,
+        created_at: msg.created_at,
+        updated_at: msg.updated_at,
+        is_mine: msg.is_mine === 1,
+        sender: msg.sender_email ? { id: msg.sender_id, email: msg.sender_email } : undefined
+      })).reverse(); // Reverse to maintain chronological order
+    } catch (error) {
+      console.error('Error getting messages before ID:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Check if a specific message exists in local storage
+   * @param messageId The message ID to check
+   * @returns boolean indicating if message exists
+   */
+  async messageExists(messageId: number): Promise<boolean> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const result = await this.db.getFirstAsync<{ count: number }>(`
+      SELECT COUNT(*) as count FROM messages WHERE id = ?
+    `, [messageId]);
+
+      return (result?.count || 0) > 0;
+    } catch (error) {
+      console.error('Error checking if message exists:', error);
+      return false;
+    }
+  }
+
+
   /**
    * Delete a chat and all related data
    * @param chatId The ID of the chat to delete
@@ -1309,6 +1398,36 @@ class SQLiteService {
       this.db = null;
       this.isInitialized = false;
       console.log('Database connection closed');
+    }
+  }
+
+  /**
+   * Clear and delete the local database on logout
+   * This drops all tables and closes the database connection
+   */
+  async clearDatabaseOnLogout(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      console.log('Clearing database on logout...');
+
+      // Drop all tables in a transaction
+      await this.db.withTransactionAsync(async () => {
+        await this.db!.execAsync('DROP TABLE IF EXISTS messages');
+        await this.db!.execAsync('DROP TABLE IF EXISTS profile_photos');
+        await this.db!.execAsync('DROP TABLE IF EXISTS profiles');
+        await this.db!.execAsync('DROP TABLE IF EXISTS other_users');
+        await this.db!.execAsync('DROP TABLE IF EXISTS chats');
+        await this.db!.execAsync('DROP TABLE IF EXISTS database_version');
+      });
+
+      // Close the database connection
+      await this.closeDatabase();
+
+      console.log('Database cleared and closed successfully');
+    } catch (error) {
+      console.error('Error clearing database on logout:', error);
+      throw error;
     }
   }
 }

@@ -1,3 +1,4 @@
+
 import { Platform } from 'react-native';
 import {
   createAgoraRtcEngine,
@@ -7,19 +8,18 @@ import {
   RtcSurfaceView,
   RtcTextureView,
   VideoSourceType,
-  AudioProfile,
-  AudioScenario,
   VideoEncoderConfiguration,
   OrientationMode,
   DegradationPreference,
   VideoCodecType,
   AudioCodecType,
+  ChannelMediaOptions,
 } from 'react-native-agora';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 
 const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
-const AGORA_APP_ID = '8fa7c231530146ff8522ececbbe3d7a5';
+const AGORA_APP_ID = "8fa7c231530146ff8522ececbbe3d7a5";
 
 class AgoraService {
   private engine: IRtcEngine | null = null;
@@ -36,7 +36,7 @@ class AgoraService {
   private isDestroyed: boolean = false;
 
   /**
-   * Initialize the Agora RTC Engine with optimized settings
+   * Initialize the Agora RTC Engine with simplified settings
    */
   async initialize(): Promise<void> {
     if (this.isDestroyed) {
@@ -56,22 +56,15 @@ class AgoraService {
       // Create the Agora engine instance
       this.engine = createAgoraRtcEngine();
 
-      // Initialize with optimized configuration
+      // Initialize with basic configuration
       this.engine.initialize({
         appId: AGORA_APP_ID,
         logConfig: {
-          filePath: '', // Disable file logging to prevent audio device conflicts
           level: 0x0001, // Only log errors
-        },
-        // Audio-specific optimizations
-        audioConfig: {
-          sampleRate: 48000,
-          channels: 2,
-          samplesPerCall: 1024,
         },
       });
 
-      // Configure audio settings to prevent CoreAudio issues
+      // Configure audio settings (simplified)
       await this.configureAudioSettings();
 
       // Configure video settings
@@ -90,35 +83,22 @@ class AgoraService {
   }
 
   /**
-   * Configure audio settings to prevent CoreAudio issues
+   * Configure audio settings with simplified approach
    */
   private async configureAudioSettings(): Promise<void> {
     if (!this.engine) return;
 
     try {
-      // Set audio profile for high quality communication
-      this.engine.setAudioProfile(
-        AudioProfile.MusicHighQuality, // High quality audio
-        AudioScenario.GameStreaming // Optimized for real-time communication
-      );
+      // Use numeric values for audio profile instead of enum
+      // AudioProfile values: Default = 0, SpeechStandard = 1, MusicStandard = 2, MusicStandardStereo = 3, MusicHighQuality = 4
+      // AudioScenario values: Default = 0, ChatRoom = 1, Education = 2, GameStreaming = 3, ShowRoom = 4, Chatroom = 5
+      this.engine.setAudioProfile(2, 3); // MusicStandard profile, GameStreaming scenario
 
       // Enable audio processing
       this.engine.enableAudio();
 
-      // Set audio recording device (use system default to avoid conflicts)
-      if (Platform.OS === 'ios') {
-        // iOS-specific audio optimizations
-        this.engine.setParameters('{"che.audio.use_remoteio":true}');
-        this.engine.setParameters('{"che.audio.ios.category":17}'); // AVAudioSessionCategoryPlayAndRecord
-        this.engine.setParameters('{"che.audio.ios.mode":3}'); // AVAudioSessionModeVoiceChat
-
-        // Prevent audio device conflicts
-        this.engine.setParameters('{"che.audio.external_device_enable":false}');
-        this.engine.setParameters('{"che.audio.ios.bluetooth.a2dp":false}');
-      }
-
-      // Set default audio route to speaker for better experience
-      this.engine.setDefaultAudioRouteToSpeakerphone(false); // Start with earpiece, user can toggle
+      // Set default audio route
+      this.engine.setDefaultAudioRouteToSpeakerphone(false);
 
       // Enable local audio by default
       this.engine.enableLocalAudio(true);
@@ -127,11 +107,12 @@ class AgoraService {
       console.log('Audio settings configured successfully');
     } catch (error) {
       console.error('Error configuring audio settings:', error);
+      // Continue without audio profile settings if they fail
     }
   }
 
   /**
-   * Configure video settings
+   * Configure video settings with simplified approach
    */
   private async configureVideoSettings(): Promise<void> {
     if (!this.engine) return;
@@ -140,15 +121,14 @@ class AgoraService {
       // Enable video
       this.engine.enableVideo();
 
-      // Set video encoder configuration
+      // Set video encoder configuration with simplified approach
       const videoConfig: VideoEncoderConfiguration = {
-        dimensions: { width: 640, height: 480 }, // Moderate resolution for better performance
-        frameRate: 15, // Balanced frame rate
-        bitrate: 400, // Moderate bitrate
+        dimensions: { width: 640, height: 480 },
+        frameRate: 15,
+        bitrate: 400,
         minBitrate: 200,
         orientationMode: OrientationMode.OrientationModeAdaptive,
         degradationPreference: DegradationPreference.MaintainFramerate,
-        codecType: VideoCodecType.VideoCodecH264,
       };
 
       this.engine.setVideoEncoderConfiguration(videoConfig);
@@ -160,18 +140,23 @@ class AgoraService {
       console.log('Video settings configured successfully');
     } catch (error) {
       console.error('Error configuring video settings:', error);
+      // Continue without video encoder configuration if it fails
     }
   }
 
   /**
-   * Add event listeners to the Agora engine
+   * Add event listeners to the Agora engine with enhanced debugging
    */
   private addListeners(): void {
     if (!this.engine) return;
 
     this.engine.registerEventHandler({
       onJoinChannelSuccess: (connection, elapsed) => {
-        console.log('Local user joined channel:', connection.channelId, connection.localUid, elapsed);
+        console.log('✅ JOIN SUCCESS - Local user joined channel:', {
+          channelId: connection.channelId,
+          localUid: connection.localUid,
+          elapsed: elapsed
+        });
         this.localUid = connection.localUid!;
         if (this.joinSuccessCallback) {
           this.joinSuccessCallback(connection.localUid!);
@@ -179,7 +164,11 @@ class AgoraService {
       },
 
       onUserJoined: (connection, remoteUid, elapsed) => {
-        console.log('Remote user joined:', remoteUid, elapsed);
+        console.log('👥 REMOTE USER JOINED:', {
+          remoteUid: remoteUid,
+          elapsed: elapsed,
+          channelId: connection.channelId
+        });
         this.remoteUid = remoteUid;
         if (this.userJoinedCallback) {
           this.userJoinedCallback(remoteUid);
@@ -187,7 +176,11 @@ class AgoraService {
       },
 
       onUserOffline: (connection, remoteUid, reason) => {
-        console.log('Remote user left:', remoteUid, reason);
+        console.log('👋 REMOTE USER LEFT:', {
+          remoteUid: remoteUid,
+          reason: reason,
+          channelId: connection.channelId
+        });
         if (this.remoteUid === remoteUid) {
           this.remoteUid = null;
         }
@@ -197,96 +190,295 @@ class AgoraService {
       },
 
       onError: (err, msg) => {
-        console.error('Agora error:', err, msg);
+        console.error('❌ AGORA ERROR:', {
+          errorCode: err,
+          message: msg,
+          channelId: this.channelId
+        });
         if (this.errorCallback) {
           this.errorCallback({ code: err, message: msg });
         }
       },
 
       onWarning: (warn, msg) => {
-        console.warn('Agora warning:', warn, msg);
+        console.warn('⚠️ AGORA WARNING:', {
+          warningCode: warn,
+          message: msg,
+          channelId: this.channelId
+        });
       },
 
-      // Audio device state change handler
-      onAudioDeviceStateChanged: (deviceId, deviceType, deviceState) => {
-        console.log('Audio device state changed:', deviceId, deviceType, deviceState);
-      },
-
-      // Connection state change handler
       onConnectionStateChanged: (connection, state, reason) => {
-        console.log('Connection state changed:', state, reason);
+        const stateNames = {
+          1: 'DISCONNECTED',
+          2: 'CONNECTING',
+          3: 'CONNECTED',
+          4: 'RECONNECTING',
+          5: 'FAILED'
+        };
+
+        const reasonNames = {
+          0: 'CONNECTING',
+          1: 'JOIN_SUCCESS',
+          2: 'INTERRUPTED',
+          3: 'BANNED_BY_SERVER',
+          4: 'JOIN_FAILED',
+          5: 'LEAVE_CHANNEL',
+          6: 'INVALID_APP_ID',
+          7: 'INVALID_CHANNEL_NAME',
+          8: 'INVALID_TOKEN',
+          9: 'TOKEN_EXPIRED',
+          10: 'REJECTED_BY_SERVER',
+          11: 'SETTING_PROXY_SERVER',
+          12: 'RENEWING_TOKEN',
+          13: 'CLIENT_IP_ADDRESS_CHANGED',
+          14: 'KEEP_ALIVE_TIMEOUT'
+        };
+
+        console.log('🔗 CONNECTION STATE CHANGED:', {
+          state: `${state} (${stateNames[state] || 'UNKNOWN'})`,
+          reason: `${reason} (${reasonNames[reason] || 'UNKNOWN'})`,
+          channelId: connection.channelId,
+          localUid: connection.localUid
+        });
+
+        // Handle specific failure cases
         if (state === 5) { // CONNECTION_STATE_FAILED
-          console.error('Connection failed, attempting to rejoin...');
-          this.handleConnectionFailure();
+          console.error('💀 CONNECTION FAILED - Reason:', reasonNames[reason] || reason);
+
+          if (reason === 6) {
+            console.error('🚫 INVALID APP ID - Check your Agora App ID');
+          } else if (reason === 7) {
+            console.error('🚫 INVALID CHANNEL NAME - Check channel name format');
+          } else if (reason === 8 || reason === 9) {
+            console.error('🚫 TOKEN ISSUE - Check token validity');
+          }
         }
       },
 
-      // Network quality indicator
       onNetworkQuality: (connection, remoteUid, txQuality, rxQuality) => {
         if (txQuality > 4 || rxQuality > 4) {
-          console.warn('Poor network quality detected');
+          console.warn('📶 POOR NETWORK QUALITY:', {
+            remoteUid: remoteUid,
+            txQuality: txQuality,
+            rxQuality: rxQuality
+          });
         }
       },
+
+      onRemoteVideoStateChanged: (connection, remoteUid, state, reason, elapsed) => {
+        const stateNames = {
+          0: 'STOPPED',
+          1: 'STARTING',
+          2: 'DECODING',
+          3: 'FROZEN',
+          4: 'FAILED'
+        };
+
+        console.log('📹 REMOTE VIDEO STATE CHANGED:', {
+          remoteUid: remoteUid,
+          state: `${state} (${stateNames[state] || 'UNKNOWN'})`,
+          reason: reason,
+          elapsed: elapsed
+        });
+      },
+
+      onRemoteAudioStateChanged: (connection, remoteUid, state, reason, elapsed) => {
+        const stateNames = {
+          0: 'STOPPED',
+          1: 'STARTING',
+          2: 'DECODING',
+          3: 'FROZEN',
+          4: 'FAILED'
+        };
+
+        console.log('🔊 REMOTE AUDIO STATE CHANGED:', {
+          remoteUid: remoteUid,
+          state: `${state} (${stateNames[state] || 'UNKNOWN'})`,
+          reason: reason,
+          elapsed: elapsed
+        });
+      },
+
+      onLeaveChannel: (connection, stats) => {
+        console.log('👋 LEFT CHANNEL:', {
+          channelId: connection.channelId,
+          duration: stats.duration,
+          txBytes: stats.txBytes,
+          rxBytes: stats.rxBytes
+        });
+      },
+
+      onRejoinChannelSuccess: (connection, elapsed) => {
+        console.log('🔄 REJOINED CHANNEL:', {
+          channelId: connection.channelId,
+          localUid: connection.localUid,
+          elapsed: elapsed
+        });
+      },
+
+      onApiCallExecuted: (api, error) => {
+        if (error !== 0) {
+          console.error('🔧 API CALL FAILED:', {
+            api: api,
+            error: error
+          });
+        }
+      },
+
+      onRequestToken: (connection) => {
+        console.log('🔑 TOKEN REQUESTED for channel:', connection.channelId);
+      }
     });
   }
 
   /**
-   * Handle connection failure
+   * Enhanced join method with better error handling and validation
    */
-  private async handleConnectionFailure(): void {
-    try {
-      if (this.channelId) {
-        console.log('Attempting to rejoin channel after connection failure...');
-        await this.leaveChannel();
-        // Wait a bit before rejoining
-        setTimeout(() => {
-          if (this.channelId) {
-            this.joinChannel(this.channelId);
-          }
-        }, 2000);
-      }
-    } catch (error) {
-      console.error('Error handling connection failure:', error);
-    }
-  }
 
-  /**
-   * Join a channel for a call
-   */
-  async joinChannel(channelId: string, token?: string): Promise<void> {
+  async joinChannelForTesting(channelId: string, uid: number = 0): Promise<void> {
     try {
+      // Validate App ID format
+      if (!AGORA_APP_ID || AGORA_APP_ID.length !== 32) {
+        throw new Error(`Invalid Agora App ID format. Expected 32 characters, got: ${AGORA_APP_ID?.length || 0}`);
+      }
+
+      // Validate App ID contains only valid hex characters
+      const hexPattern = /^[0-9a-f]+$/i;
+      if (!hexPattern.test(AGORA_APP_ID)) {
+        throw new Error('Invalid Agora App ID: must contain only hexadecimal characters');
+      }
+
       if (!this.initialized || !this.engine) {
+        console.log('🔄 Initializing engine...');
         await this.initialize();
       }
 
       if (!this.engine) {
-        throw new Error('Engine not initialized');
+        throw new Error('Engine not initialized after initialization attempt');
       }
 
-      // If no token is provided, try to get one from the server
-      if (!token) {
-        token = await this.getToken(channelId);
+      // Validate channel name
+      if (!channelId || channelId.trim() === '') {
+        throw new Error('Invalid channel ID: cannot be empty');
       }
 
-      // Set channel profile for communication
-      this.engine.setChannelProfile(ChannelProfileType.ChannelProfileCommunication);
+      if (channelId.length > 64) {
+        throw new Error('Invalid channel ID: too long (max 64 characters)');
+      }
 
-      // Set client role to broadcaster for two-way communication
-      this.engine.setClientRole(ClientRoleType.ClientRoleBroadcaster);
+      console.log(`🚀 STARTING JOIN PROCESS for channel: "${channelId}" with UID: ${uid}`);
 
-      // Join the channel with optimized options
-      this.engine.joinChannel(token || '', channelId, 0, {
+      // Force a fresh start - leave any existing channel first
+      try {
+        await this.engine.leaveChannel();
+        console.log('🧹 Left any existing channel');
+      } catch (e) {
+        // Ignore errors if not in a channel
+      }
+
+      // Add a small delay to ensure clean state
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Set channel profile first with explicit timing
+      console.log('📡 Setting channel profile...');
+      await this.engine.setChannelProfile(ChannelProfileType.ChannelProfileCommunication);
+
+      // Small delay after setting channel profile
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Set client role
+      console.log('👤 Setting client role...');
+      await this.engine.setClientRole(ClientRoleType.ClientRoleBroadcaster);
+
+      // Small delay after setting client role
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Enable audio and video explicitly before joining
+      console.log('🎵 Enabling audio...');
+      await this.engine.enableAudio();
+      await this.engine.enableLocalAudio(this.isAudioEnabled);
+
+      console.log('📹 Enabling video...');
+      await this.engine.enableVideo();
+      await this.engine.enableLocalVideo(this.isVideoEnabled);
+
+      // Configure channel media options with more explicit settings
+      const options: ChannelMediaOptions = {
         publishMicrophoneTrack: this.isAudioEnabled,
         publishCameraTrack: this.isVideoEnabled,
         autoSubscribeAudio: true,
         autoSubscribeVideo: true,
         clientRoleType: ClientRoleType.ClientRoleBroadcaster,
+        // Add these additional options for better reliability
+        enableAudioRecordingOrPlayout: true,
+        publishScreenTrack: false,
+        publishCustomAudioTrack: false,
+        publishCustomVideoTrack: false,
+        publishMediaPlayerAudioTrack: false,
+        publishMediaPlayerVideoTrack: false,
+      };
+
+      console.log('📋 Channel media options configured:', {
+        publishMic: options.publishMicrophoneTrack,
+        publishCamera: options.publishCameraTrack,
+        autoSubAudio: options.autoSubscribeAudio,
+        autoSubVideo: options.autoSubscribeVideo,
+        enableAudioPlayback: options.enableAudioRecordingOrPlayout,
       });
 
+      // Create a promise that will resolve when we successfully join
+      const joinPromise = new Promise<void>((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          reject(new Error('Join channel timeout - onJoinChannelSuccess not called within 15 seconds'));
+        }, 15000); // 15 second timeout
+
+        // Set up a one-time join success handler
+        const originalJoinCallback = this.joinSuccessCallback;
+        this.joinSuccessCallback = (joinedUid: number) => {
+          clearTimeout(timeoutId);
+          this.joinSuccessCallback = originalJoinCallback; // Restore original callback
+          if (originalJoinCallback) {
+            originalJoinCallback(joinedUid);
+          }
+          resolve();
+        };
+
+        // Set up a one-time error handler for join failures
+        const originalErrorCallback = this.errorCallback;
+        this.errorCallback = (err: any) => {
+          clearTimeout(timeoutId);
+          this.errorCallback = originalErrorCallback; // Restore original callback
+          if (originalErrorCallback) {
+            originalErrorCallback(err);
+          }
+          reject(new Error(`Join failed with error: ${err.message || err.code || err}`));
+        };
+      });
+
+      console.log('🔗 Calling engine.joinChannel...');
+
+      // Make the actual join call
+      const joinResult = await this.engine.joinChannel('', channelId, uid, options);
+      console.log('📞 Join channel method returned:', joinResult);
+
+      // Wait for the actual join success callback or timeout
+      await joinPromise;
+
       this.channelId = channelId;
-      console.log('Joined channel:', channelId);
+      this.localUid = uid;
+
+      console.log(`✅ SUCCESSFULLY JOINED CHANNEL: ${channelId} with UID: ${uid}`);
+
     } catch (error) {
-      console.error('Failed to join channel:', error);
+      console.error('❌ FAILED TO JOIN CHANNEL:', {
+        error: error.message,
+        channelId: channelId,
+        uid: uid,
+        engineInitialized: this.initialized,
+        engineExists: !!this.engine,
+        appIdLength: AGORA_APP_ID?.length,
+      });
       throw error;
     }
   }
@@ -298,10 +490,10 @@ class AgoraService {
     try {
       if (!this.engine) return;
 
-      this.engine.leaveChannel();
+      await this.engine.leaveChannel();
       this.channelId = null;
       this.remoteUid = null;
-      console.log('Left channel');
+      console.log('👋 Left channel');
     } catch (error) {
       console.error('Failed to leave channel:', error);
       throw error;
@@ -315,6 +507,7 @@ class AgoraService {
     try {
       if (!this.engine) return;
       this.engine.switchCamera();
+      console.log('📹 Camera switched');
     } catch (error) {
       console.error('Failed to switch camera:', error);
       throw error;
@@ -332,7 +525,7 @@ class AgoraService {
       this.engine.muteLocalAudioStream(muted);
       this.isAudioEnabled = !muted;
 
-      console.log(`Audio ${muted ? 'muted' : 'unmuted'}`);
+      console.log(`🔊 Audio ${muted ? 'muted' : 'unmuted'}`);
     } catch (error) {
       console.error('Failed to toggle audio:', error);
       throw error;
@@ -350,7 +543,7 @@ class AgoraService {
       this.engine.muteLocalVideoStream(!enabled);
       this.isVideoEnabled = enabled;
 
-      console.log(`Video ${enabled ? 'enabled' : 'disabled'}`);
+      console.log(`📹 Video ${enabled ? 'enabled' : 'disabled'}`);
     } catch (error) {
       console.error('Failed to toggle video:', error);
       throw error;
@@ -364,7 +557,7 @@ class AgoraService {
     try {
       if (!this.engine) return;
       this.engine.setEnableSpeakerphone(enabled);
-      console.log(`Speakerphone ${enabled ? 'enabled' : 'disabled'}`);
+      console.log(`📢 Speakerphone ${enabled ? 'enabled' : 'disabled'}`);
     } catch (error) {
       console.error('Failed to toggle speakerphone:', error);
       throw error;
@@ -375,39 +568,8 @@ class AgoraService {
    * Get a token from the server for joining a channel
    */
   private async getToken(channelId: string): Promise<string | null> {
-    try {
-      const token = await AsyncStorage.getItem('auth_token');
-
-      if (!token) {
-        console.error('No auth token found for Agora token request');
-        return null;
-      }
-
-      const response = await axios.post(
-        `${API_BASE_URL}/api/v1/calls/token`,
-        {
-          channel_id: channelId,
-          channel_name: channelId,
-          uid: this.localUid.toString()
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/json',
-          },
-          timeout: 10000, // 10 second timeout
-        }
-      );
-
-      if (response.data && response.data.status === 'success') {
-        return response.data.data.token;
-      }
-
-      return null;
-    } catch (error) {
-      console.error('Failed to get Agora token:', error);
-      return null;
-    }
+    console.log('🔑 Using no token for testing');
+    return null;
   }
 
   // Callback setters
@@ -438,6 +600,10 @@ class AgoraService {
 
   getEngine(): IRtcEngine | null {
     return this.engine;
+  }
+
+  getCurrentChannelId(): string | null {
+    return this.channelId;
   }
 
   isInitialized(): boolean {
@@ -499,7 +665,7 @@ class AgoraService {
     this.userOfflineCallback = null;
     this.errorCallback = null;
 
-    console.log('Agora engine destroyed successfully');
+    console.log('🧹 Agora engine destroyed successfully');
   }
 }
 
