@@ -31,7 +31,7 @@ class ApiClient {
 
         this.client = axios.create({
             baseURL: CONFIG.API_URL,
-            timeout: 15000, // 15 seconds
+            timeout: CONFIG.API_TIMEOUT,
             headers: {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json'
@@ -49,11 +49,14 @@ class ApiClient {
 
                 // Add auth token if available
                 if (!this.authToken) {
-                    this.authToken = await AsyncStorage.getItem('@auth_token');
+                    this.authToken = await AsyncStorage.getItem('auth_token');
                 }
 
                 if (this.authToken) {
                     config.headers['Authorization'] = `Bearer ${this.authToken}`;
+                    console.log('✅ Auth token added to request:', config.url);
+                } else {
+                    console.warn('⚠️ No auth token available for request:', config.url);
                 }
 
                 return config;
@@ -151,7 +154,7 @@ class ApiClient {
         this.isRefreshingToken = true;
 
         try {
-            const refreshToken = await AsyncStorage.getItem('@refresh_token');
+            const refreshToken = await AsyncStorage.getItem('refresh_token');
 
             if (!refreshToken) {
                 this.isRefreshingToken = false;
@@ -164,10 +167,10 @@ class ApiClient {
 
             if (response.data && response.data.token) {
                 this.authToken = response.data.token;
-                await AsyncStorage.setItem('@auth_token', response.data.token);
+                await AsyncStorage.setItem('auth_token', response.data.token);
 
                 if (response.data.refresh_token) {
-                    await AsyncStorage.setItem('@refresh_token', response.data.refresh_token);
+                    await AsyncStorage.setItem('refresh_token', response.data.refresh_token);
                 }
 
                 // Process any queued requests
@@ -201,8 +204,8 @@ class ApiClient {
      * Log out user
      */
     private async logoutUser(): Promise<void> {
-        await AsyncStorage.removeItem('@auth_token');
-        await AsyncStorage.removeItem('@refresh_token');
+        await AsyncStorage.removeItem('auth_token');
+        await AsyncStorage.removeItem('refresh_token');
         this.authToken = null;
 
         // In a real app, you would also navigate to login screen
@@ -210,18 +213,35 @@ class ApiClient {
     }
 
     /**
+     * Initialize auth token from storage
+     */
+    public async initializeAuthToken(): Promise<void> {
+        try {
+            this.authToken = await AsyncStorage.getItem('auth_token');
+            if (this.authToken) {
+                console.log('🔑 Auth token loaded from storage');
+            } else {
+                console.warn('⚠️ No auth token found in storage');
+            }
+        } catch (error) {
+            console.error('❌ Error loading auth token from storage:', error);
+        }
+    }
+
+    /**
      * Set auth token manually
      */
     public async setAuthToken(token: string): Promise<void> {
         this.authToken = token;
-        await AsyncStorage.setItem('@auth_token', token);
+        await AsyncStorage.setItem('auth_token', token);
+        console.log('🔑 Auth token set manually');
     }
 
     /**
      * Set refresh token manually
      */
     public async setRefreshToken(token: string): Promise<void> {
-        await AsyncStorage.setItem('@refresh_token', token);
+        await AsyncStorage.setItem('refresh_token', token);
     }
 
     /**
@@ -229,8 +249,26 @@ class ApiClient {
      */
     public async clearAuthToken(): Promise<void> {
         this.authToken = null;
-        await AsyncStorage.removeItem('@auth_token');
-        await AsyncStorage.removeItem('@refresh_token');
+        await AsyncStorage.removeItem('auth_token');
+        await AsyncStorage.removeItem('refresh_token');
+        console.log('🔑 Auth token cleared');
+    }
+
+    /**
+     * Check if user is authenticated
+     */
+    public async isAuthenticated(): Promise<boolean> {
+        if (!this.authToken) {
+            this.authToken = await AsyncStorage.getItem('auth_token');
+        }
+        return !!this.authToken;
+    }
+
+    /**
+     * Get current auth token
+     */
+    public getAuthToken(): string | null {
+        return this.authToken;
     }
 
     /**
@@ -502,7 +540,7 @@ class ApiClient {
      */
     public auth = {
         refresh: async () => {
-            const refreshToken = await AsyncStorage.getItem('@refresh_token');
+            const refreshToken = await AsyncStorage.getItem('refresh_token');
             return this.post('/api/v1/auth/refresh', { refresh_token: refreshToken });
         },
     };
