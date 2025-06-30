@@ -3,7 +3,7 @@ import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiClient } from './api-client';
-import { CONFIG } from '@/config';
+import { CONFIG } from './config';
 
 // Configure how notifications appear when the app is in the foreground
 Notifications.setNotificationHandler({

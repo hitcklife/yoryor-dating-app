@@ -13,7 +13,7 @@ export const CONFIG = {
 
   // Agora Configuration
   AGORA: {
-    appId: 'your-agora-app-id', // This should be updated with actual value
+    appId: '8fa7c231530146ff8522ececbbe3d7a5', // Actual Agora App ID
   },
 
   // Notification Configuration

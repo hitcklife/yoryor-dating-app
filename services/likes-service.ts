@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiClient } from "./api-client";
-import { CONFIG, getAssetUrl } from "@/config";
+import { CONFIG, getAssetUrl } from "./config";
 
 // Types for the likes API response
 export interface User {

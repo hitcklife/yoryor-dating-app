@@ -1,6 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiClient } from "./api-client";
-import { CONFIG, getAssetUrl } from "@/config";
+import { CONFIG, getAssetUrl } from "./config";
 
 // Types for the API response
 export type PotentialMatchPhoto = {

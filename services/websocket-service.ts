@@ -3,7 +3,7 @@ import Pusher from 'pusher-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { notificationService } from './notification-service';
 import { apiClient } from './api-client';
-import { CONFIG } from '@/config';
+import { CONFIG } from './config';
 
 class WebSocketService {
   private echo: Echo | null = null;

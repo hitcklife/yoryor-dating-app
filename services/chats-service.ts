@@ -2,7 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { sqliteService } from "./sqlite-service";
 import NetInfo from "@react-native-community/netinfo";
 import { apiClient } from "./api-client";
-import { CONFIG, getAssetUrl } from "@/config";
+import { CONFIG, getAssetUrl } from "./config";
 
 // Types for the chats API response
 export interface ProfilePhoto {
@@ -327,15 +327,10 @@ class ChatsService {
 
       // If we have internet, fetch fresh data only if we don't have recent local data
       if (isConnected) {
-        const token = await AsyncStorage.getItem('auth_token');
-        if (!token) {
-          throw new Error('No auth token found');
-        }
+        const response = await apiClient.chats.getById(chatId, page, CONFIG.APP.chatMessagesPageSize);
 
-              const response = await apiClient.chats.getById(chatId, page, CONFIG.APP.chatMessagesPageSize);
-
-        if (response.data.status === 'success') {
-          const chatData = response.data.data;
+        if (response.status === 'success' && response.data) {
+          const chatData = response.data;
 
           // Add ownership to messages based on current user ID
           const messagesWithOwnership = addMessageOwnership(chatData.messages, currentUserId);
@@ -344,12 +339,12 @@ class ChatsService {
           await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
 
           return {
-            ...response.data,
+            ...response,
             data: {
               ...chatData,
               messages: messagesWithOwnership
             }
-          };
+          } as ChatDetailResponse;
         }
       }
 
@@ -408,32 +403,21 @@ class ChatsService {
 
   async sendMessage(chatId: number, content: string, messageType: string = 'text', mediaUrl?: string, mediaData?: any, replyToMessageId?: number): Promise<SendMessageResponse | null> {
     try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
       const currentUserId = await this.getCurrentUser();
       if (!currentUserId) {
         throw new Error('Current user ID not found');
       }
 
-      const response = await axios.post(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, {
+      const response = await apiClient.chats.sendMessage(chatId, {
         content,
         message_type: messageType,
         media_url: mediaUrl,
         media_data: mediaData,
         reply_to_message_id: replyToMessageId
-      }, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        }
       });
 
-      if (response.data.status === 'success') {
-        const message = response.data.data.message;
+      if (response.status === 'success' && response.data) {
+        const message = response.data.message;
 
         // Add ownership to the sent message
         const messageWithOwnership = {
@@ -445,11 +429,11 @@ class ChatsService {
         await sqliteService.storeMessage(messageWithOwnership);
 
         return {
-          ...response.data,
+          ...response,
           data: {
             message: messageWithOwnership
           }
-        };
+        } as SendMessageResponse;
       }
 
       return null;
@@ -461,26 +445,15 @@ class ChatsService {
 
   async sendVoiceMessage(chatId: number, formData: FormData): Promise<SendMessageResponse | null> {
     try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
       const currentUserId = await this.getCurrentUser();
       if (!currentUserId) {
         throw new Error('Current user ID not found');
       }
 
-      const response = await axios.post(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, formData, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-          'Content-Type': 'multipart/form-data'
-        }
-      });
+      const response = await apiClient.chats.sendVoiceMessage(chatId, formData);
 
-      if (response.data.status === 'success') {
-        const message = response.data.data.message;
+      if (response.status === 'success' && response.data) {
+        const message = response.data.message;
 
         // Add ownership to the sent message
         const messageWithOwnership = {
@@ -492,11 +465,11 @@ class ChatsService {
         await sqliteService.storeMessage(messageWithOwnership);
 
         return {
-          ...response.data,
+          ...response,
           data: {
             message: messageWithOwnership
           }
-        };
+        } as SendMessageResponse;
       }
 
       return null;
@@ -560,22 +533,8 @@ class ChatsService {
         };
       }
 
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
       console.log('Fetching older messages from server...');
-      const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-        },
-        params: {
-          before_message_id: oldestMessageId,
-          per_page: 20
-        }
-      });
+      const response = await apiClient.chats.loadMoreMessages(chatId, 1, CONFIG.APP.chatMessagesPageSize);
 
       if (response.data.status === 'success') {
         const messages = response.data.data.messages;

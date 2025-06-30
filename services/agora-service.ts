@@ -20,7 +20,7 @@ import {
 } from 'react-native-agora';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiClient } from './api-client';
-import { CONFIG } from '@/config';
+import { CONFIG } from './config';
 
 class AgoraService {
   private engine: IRtcEngine | null = null;
@@ -611,7 +611,7 @@ class AgoraService {
         uid: uid,
         engineInitialized: this.initialized,
         engineExists: !!this.engine,
-        appIdLength: AGORA_APP_ID?.length,
+        appIdLength: CONFIG.AGORA.appId?.length,
       });
       throw error;
     }

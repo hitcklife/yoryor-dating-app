@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { CONFIG, getApiEndpoint } from '@/config';
+import { CONFIG, getApiEndpoint } from './config';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -503,7 +503,7 @@ class ApiClient {
     public auth = {
         refresh: async () => {
             const refreshToken = await AsyncStorage.getItem('@refresh_token');
-            return this.post('/auth/refresh', { refresh_token: refreshToken });
+            return this.post('/api/v1/auth/refresh', { refresh_token: refreshToken });
         },
     };
 
@@ -512,11 +512,11 @@ class ApiClient {
      */
     public chats = {
         getAll: async (page: number = 1, perPage: number = CONFIG.APP.defaultPageSize) => {
-            return this.get(`/chats?page=${page}&per_page=${perPage}`);
+            return this.get(`/api/v1/chats?page=${page}&per_page=${perPage}`);
         },
 
         getById: async (chatId: number, page: number = 1, perPage: number = CONFIG.APP.chatMessagesPageSize) => {
-            return this.get(`/chats/${chatId}?page=${page}&per_page=${perPage}`);
+            return this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
         },
 
         sendMessage: async (chatId: number, data: {
@@ -526,17 +526,17 @@ class ApiClient {
             media_data?: any;
             reply_to_message_id?: number;
         }) => {
-            return this.post(`/chats/${chatId}/messages`, data);
+            return this.post(`/api/v1/chats/${chatId}/messages`, data);
         },
 
         sendVoiceMessage: async (chatId: number, formData: FormData) => {
-            return this.post(`/chats/${chatId}/messages`, formData, {
+            return this.post(`/api/v1/chats/${chatId}/messages`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
         },
 
         loadMoreMessages: async (chatId: number, page: number, perPage: number = CONFIG.APP.chatMessagesPageSize) => {
-            return this.get(`/chats/${chatId}?page=${page}&per_page=${perPage}`);
+            return this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
         },
     };
 
@@ -545,11 +545,11 @@ class ApiClient {
      */
     public matches = {
         getPotential: async (page: number = 1) => {
-            return this.get(`/matches/potential?page=${page}`);
+            return this.get(`/api/v1/matches/potential?page=${page}`);
         },
 
         getMatches: async (page: number = 1) => {
-            return this.get(`/matches?page=${page}`);
+            return this.get(`/api/v1/matches?page=${page}`);
         },
     };
 
@@ -558,11 +558,11 @@ class ApiClient {
      */
     public likes = {
         send: async (userId: number | string) => {
-            return this.post('/likes', { user_id: userId });
+            return this.post('/api/v1/likes', { user_id: userId });
         },
 
         getReceived: async (page: number = 1) => {
-            return this.get(`/likes/received?page=${page}`);
+            return this.get(`/api/v1/likes/received?page=${page}`);
         },
     };
 
@@ -571,7 +571,7 @@ class ApiClient {
      */
     public dislikes = {
         send: async (userId: number | string) => {
-            return this.post('/dislikes', { user_id: userId });
+            return this.post('/api/v1/dislikes', { user_id: userId });
         },
     };
 
@@ -590,7 +590,7 @@ class ApiClient {
             isDevice?: boolean;
             manufacturer?: string;
         }) => {
-            return this.post('/device-tokens', tokenData);
+            return this.post('/api/v1/device-tokens', tokenData);
         },
     };
 
@@ -599,7 +599,7 @@ class ApiClient {
      */
     public broadcasting = {
         auth: async (data: { socket_id: string; channel_name: string }) => {
-            return this.post('/broadcasting/auth', data);
+            return this.post('/api/v1/broadcasting/auth', data);
         },
     };
 
@@ -608,7 +608,7 @@ class ApiClient {
      */
     public agora = {
         getToken: async (channelName: string, userId: string, role: 'publisher' | 'subscriber' = 'publisher') => {
-            return this.post('/agora/token', {
+            return this.post('/api/v1/agora/token', {
                 channel_name: channelName,
                 user_id: userId,
                 role: role,

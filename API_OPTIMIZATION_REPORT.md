@@ -5,7 +5,7 @@ This document outlines the comprehensive optimization of API requests across the
 
 ## Key Improvements Made
 
-### 1. Centralized Configuration (`config.ts`)
+### 1. Centralized Configuration (`services/config.ts`)
 - **Created**: A new centralized configuration file to replace scattered hardcoded URLs and settings
 - **Benefits**: 
   - Single source of truth for all API endpoints
@@ -149,7 +149,7 @@ apiClient.agora.getToken(channelName, userId, role)
 ## File Changes Summary
 
 ### New Files
-- `config.ts` - Centralized configuration
+- `services/config.ts` - Centralized configuration
 - `API_OPTIMIZATION_REPORT.md` - This documentation
 
 ### Modified Files
@@ -183,7 +183,7 @@ const response = await apiClient.get('/endpoint');
 4. Follow the established pattern of error handling
 
 ### Environment Configuration
-Update `config.ts` values for different environments:
+Update `services/config.ts` values for different environments:
 ```typescript
 export const CONFIG = {
   API_URL: process.env.NODE_ENV === 'production' 
