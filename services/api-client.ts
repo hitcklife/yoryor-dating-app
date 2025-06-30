@@ -1,0 +1,498 @@
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import { CONFIG } from '@/config';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
+
+export interface ApiResponse<T = any> {
+    status: 'success' | 'error';
+    message?: string;
+    data?: T;
+}
+
+class ApiClient {
+    private client: AxiosInstance;
+    private authToken: string | null = null;
+    private requestQueue: Array<() => Promise<any>> = [];
+    private isRefreshingToken = false;
+
+    // Singleton pattern
+    private static instance: ApiClient;
+    public static getInstance(): ApiClient {
+        if (!ApiClient.instance) {
+            ApiClient.instance = new ApiClient();
+        }
+        return ApiClient.instance;
+    }
+
+    constructor() {
+        if (ApiClient.instance) {
+            return ApiClient.instance;
+        }
+
+        this.client = axios.create({
+            baseURL: CONFIG.API_URL,
+            timeout: 15000, // 15 seconds
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+            }
+        });
+
+        // Set up request interceptor for auth token
+        this.client.interceptors.request.use(
+            async (config) => {
+                // Check network connection before making request
+                const netInfo = await NetInfo.fetch();
+                if (!netInfo.isConnected) {
+                    throw new Error('No internet connection');
+                }
+
+                // Add auth token if available
+                if (!this.authToken) {
+                    this.authToken = await AsyncStorage.getItem('@auth_token');
+                }
+
+                if (this.authToken) {
+                    config.headers['Authorization'] = `Bearer ${this.authToken}`;
+                }
+
+                return config;
+            },
+            (error) => {
+                return Promise.reject(error);
+            }
+        );
+
+        // Set up response interceptor for error handling
+        this.client.interceptors.response.use(
+            (response) => {
+                // Transform all responses to standard format
+                return this.transformResponse(response);
+            },
+            async (error) => {
+                // Handle network errors
+                if (!error.response) {
+                    return {
+                        status: 'error',
+                        message: 'Network error. Please check your connection.'
+                    };
+                }
+
+                // Handle expired token
+                if (error.response.status === 401) {
+                    // Try to refresh token
+                    try {
+                        const refreshed = await this.refreshToken();
+                        if (refreshed) {
+                            // Retry the original request
+                            return this.client.request(error.config);
+                        }
+                    } catch (refreshError) {
+                        // If refresh fails, log out user
+                        await this.logoutUser();
+                        return {
+                            status: 'error',
+                            message: 'Session expired. Please log in again.'
+                        };
+                    }
+                }
+
+                // Handle other errors
+                return {
+                    status: 'error',
+                    message: error.response.data.message || 'An error occurred',
+                    data: error.response.data
+                };
+            }
+        );
+
+        ApiClient.instance = this;
+    }
+
+    /**
+     * Transform response to standard format
+     */
+    private transformResponse(response: AxiosResponse): ApiResponse {
+        // If response already has status field, use it
+        if (response.data && 'status' in response.data) {
+            return response.data;
+        }
+
+        // Otherwise, construct standard response format
+        return {
+            status: 'success',
+            data: response.data
+        };
+    }
+
+    /**
+     * Refresh authentication token
+     */
+    private async refreshToken(): Promise<boolean> {
+        // If already refreshing, wait for it to complete
+        if (this.isRefreshingToken) {
+            return new Promise((resolve) => {
+                // Check every 100ms if refreshing has completed
+                const checkRefreshingStatus = setInterval(() => {
+                    if (!this.isRefreshingToken) {
+                        clearInterval(checkRefreshingStatus);
+                        resolve(this.authToken !== null);
+                    }
+                }, 100);
+
+                // Timeout after 5 seconds
+                setTimeout(() => {
+                    clearInterval(checkRefreshingStatus);
+                    resolve(this.authToken !== null);
+                }, 5000);
+            });
+        }
+
+        this.isRefreshingToken = true;
+
+        try {
+            const refreshToken = await AsyncStorage.getItem('@refresh_token');
+
+            if (!refreshToken) {
+                this.isRefreshingToken = false;
+                return false;
+            }
+
+            const response = await axios.post(`${CONFIG.API_URL}/auth/refresh`, {
+                refresh_token: refreshToken
+            });
+
+            if (response.data && response.data.token) {
+                this.authToken = response.data.token;
+                await AsyncStorage.setItem('@auth_token', response.data.token);
+
+                if (response.data.refresh_token) {
+                    await AsyncStorage.setItem('@refresh_token', response.data.refresh_token);
+                }
+
+                // Process any queued requests
+                this.processRequestQueue();
+                this.isRefreshingToken = false;
+                return true;
+            }
+
+            this.isRefreshingToken = false;
+            return false;
+        } catch (error) {
+            console.error('Error refreshing token:', error);
+            this.isRefreshingToken = false;
+            return false;
+        }
+    }
+
+    /**
+     * Process queued requests after token refresh
+     */
+    private async processRequestQueue(): Promise<void> {
+        const queue = [...this.requestQueue];
+        this.requestQueue = [];
+
+        for (const request of queue) {
+            await request();
+        }
+    }
+
+    /**
+     * Log out user
+     */
+    private async logoutUser(): Promise<void> {
+        await AsyncStorage.removeItem('@auth_token');
+        await AsyncStorage.removeItem('@refresh_token');
+        this.authToken = null;
+
+        // In a real app, you would also navigate to login screen
+        // and clear any user data from the app state
+    }
+
+    /**
+     * Set auth token manually
+     */
+    public async setAuthToken(token: string): Promise<void> {
+        this.authToken = token;
+        await AsyncStorage.setItem('@auth_token', token);
+    }
+
+    /**
+     * Set refresh token manually
+     */
+    public async setRefreshToken(token: string): Promise<void> {
+        await AsyncStorage.setItem('@refresh_token', token);
+    }
+
+    /**
+     * Clear auth token
+     */
+    public async clearAuthToken(): Promise<void> {
+        this.authToken = null;
+        await AsyncStorage.removeItem('@auth_token');
+        await AsyncStorage.removeItem('@refresh_token');
+    }
+
+    /**
+     * Make GET request
+     */
+    public async get<T = any>(url: string, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
+        try {
+            return await this.client.get(url, config);
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                return {
+                    status: 'error',
+                    message: error.response?.data?.message || error.message,
+                    data: error.response?.data
+                };
+            }
+
+            return {
+                status: 'error',
+                message: 'An unexpected error occurred'
+            };
+        }
+    }
+
+    /**
+     * Make POST request
+     */
+    public async post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
+        try {
+            return await this.client.post(url, data, config);
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                return {
+                    status: 'error',
+                    message: error.response?.data?.message || error.message,
+                    data: error.response?.data
+                };
+            }
+
+            return {
+                status: 'error',
+                message: 'An unexpected error occurred'
+            };
+        }
+    }
+
+    /**
+     * Make PUT request
+     */
+    public async put<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
+        try {
+            return await this.client.put(url, data, config);
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                return {
+                    status: 'error',
+                    message: error.response?.data?.message || error.message,
+                    data: error.response?.data
+                };
+            }
+
+            return {
+                status: 'error',
+                message: 'An unexpected error occurred'
+            };
+        }
+    }
+
+    /**
+     * Make PATCH request
+     */
+    public async patch<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
+        try {
+            return await this.client.patch(url, data, config);
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                return {
+                    status: 'error',
+                    message: error.response?.data?.message || error.message,
+                    data: error.response?.data
+                };
+            }
+
+            return {
+                status: 'error',
+                message: 'An unexpected error occurred'
+            };
+        }
+    }
+
+    /**
+     * Make DELETE request
+     */
+    public async delete<T = any>(url: string, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
+        try {
+            return await this.client.delete(url, config);
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                return {
+                    status: 'error',
+                    message: error.response?.data?.message || error.message,
+                    data: error.response?.data
+                };
+            }
+
+            return {
+                status: 'error',
+                message: 'An unexpected error occurred'
+            };
+        }
+    }
+
+    /**
+     * Upload file(s)
+     */
+    public async upload<T = any>(
+        url: string,
+        files: Array<{ uri: string; name: string; type: string }>,
+        fieldName: string = 'file',
+        additionalData?: Record<string, any>,
+        onProgress?: (progress: number) => void
+    ): Promise<ApiResponse<T>> {
+        try {
+            const formData = new FormData();
+
+            // Add files to form data
+            files.forEach((file, index) => {
+                formData.append(`${fieldName}${files.length > 1 ? '[]' : ''}`, {
+                    uri: file.uri,
+                    name: file.name,
+                    type: file.type
+                } as any);
+            });
+
+            // Add any additional data
+            if (additionalData) {
+                Object.keys(additionalData).forEach(key => {
+                    formData.append(key, additionalData[key]);
+                });
+            }
+
+            const response = await this.client.post(url, formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data'
+                },
+                onUploadProgress: event => {
+                    if (onProgress && event.total) {
+                        const progress = Math.round((event.loaded * 100) / event.total);
+                        onProgress(progress);
+                    }
+                }
+            });
+
+            return response;
+        } catch (error) {
+            if (axios.isAxiosError(error)) {
+                return {
+                    status: 'error',
+                    message: error.response?.data?.message || error.message,
+                    data: error.response?.data
+                };
+            }
+
+            return {
+                status: 'error',
+                message: 'An unexpected error occurred'
+            };
+        }
+    }
+
+    /**
+     * Download file
+     */
+    public async download(
+        url: string,
+        destinationPath: string,
+        onProgress?: (progress: number) => void
+    ): Promise<ApiResponse<{ path: string }>> {
+        try {
+            // Check if the FileSystem is available (should be imported from expo-file-system)
+            const FileSystem = require('expo-file-system');
+
+            if (!FileSystem) {
+                return {
+                    status: 'error',
+                    message: 'FileSystem module not available'
+                };
+            }
+
+            const downloadResumable = FileSystem.createDownloadResumable(
+                url.startsWith('http') ? url : `${CONFIG.API_URL}${url}`,
+                destinationPath,
+                {
+                    headers: this.authToken ? {
+                        Authorization: `Bearer ${this.authToken}`
+                    } : undefined
+                },
+                progress => {
+                    if (onProgress && progress.totalBytesExpectedToWrite > 0) {
+                        const progressPercent = progress.totalBytesWritten / progress.totalBytesExpectedToWrite * 100;
+                        onProgress(progressPercent);
+                    }
+                }
+            );
+
+            const { uri } = await downloadResumable.downloadAsync();
+
+            return {
+                status: 'success',
+                data: { path: uri }
+            };
+        } catch (error) {
+            console.error('Download error:', error);
+            return {
+                status: 'error',
+                message: 'Failed to download file'
+            };
+        }
+    }
+
+    /**
+     * Check if the device has internet connection
+     */
+    public async isConnected(): Promise<boolean> {
+        const netInfo = await NetInfo.fetch();
+        return !!(netInfo.isConnected && netInfo.isInternetReachable);
+    }
+
+    /**
+     * Set default request timeout
+     */
+    public setTimeout(timeout: number): void {
+        this.client.defaults.timeout = timeout;
+    }
+
+    /**
+     * Set default headers
+     */
+    public setHeaders(headers: Record<string, string>): void {
+        Object.keys(headers).forEach(key => {
+            this.client.defaults.headers.common[key] = headers[key];
+        });
+    }
+
+    /**
+     * Clear request headers
+     */
+    public clearHeaders(headerNames: string[]): void {
+        headerNames.forEach(header => {
+            delete this.client.defaults.headers.common[header];
+        });
+    }
+
+    /**
+     * Create a cancelable request
+     */
+    public createCancelToken() {
+        const CancelToken = axios.CancelToken;
+        const source = CancelToken.source();
+        return source;
+    }
+}
+
+// Export singleton instance
+export const apiClient = ApiClient.getInstance();

@@ -494,6 +494,53 @@ class ChatsService {
     }
   }
 
+  async sendVoiceMessage(chatId: number, formData: FormData): Promise<SendMessageResponse | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const currentUserId = await this.getCurrentUser();
+      if (!currentUserId) {
+        throw new Error('Current user ID not found');
+      }
+
+      const response = await axios.post(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, formData, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json',
+          'Content-Type': 'multipart/form-data'
+        }
+      });
+
+      if (response.data.status === 'success') {
+        const message = response.data.data.message;
+
+        // Add ownership to the sent message
+        const messageWithOwnership = {
+          ...message,
+          is_mine: message.sender_id === currentUserId
+        };
+
+        // Store message in SQLite
+        await sqliteService.storeMessage(messageWithOwnership);
+
+        return {
+          ...response.data,
+          data: {
+            message: messageWithOwnership
+          }
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error sending voice message:', error);
+      throw error;
+    }
+  }
+
   async loadMoreMessages(chatId: number, oldestMessageId: number): Promise<{
     status: string;
     data: { chat: any; messages: Message[]; pagination: any }
