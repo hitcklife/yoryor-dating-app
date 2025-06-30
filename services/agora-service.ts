@@ -53,7 +53,7 @@ class AgoraService {
 
       // Handle different response formats
       let tokenValue = null;
-      
+
       if (response.data && response.data.token) {
         // Direct token in response.data
         tokenValue = response.data.token;
@@ -84,7 +84,7 @@ class AgoraService {
       }
     } catch (error) {
       console.warn('⚠️ Failed to get token from backend, using temporary token:', error);
-      
+
       // For testing purposes, generate a temporary token
       // In production, you should always use proper token generation
       return this.generateTemporaryToken(channelId, uid);
@@ -100,7 +100,7 @@ class AgoraService {
     const timestamp = Math.floor(Date.now() / 1000);
     const randomString = Math.random().toString(36).substring(2);
     const tokenData = `${CONFIG.AGORA.appId}${channelId}${uid}${timestamp}${randomString}`;
-    
+
     // Simple hash function
     let hash = 0;
     for (let i = 0; i < tokenData.length; i++) {
@@ -108,7 +108,7 @@ class AgoraService {
       hash = ((hash << 5) - hash) + char;
       hash = hash & hash; // Convert to 32-bit integer
     }
-    
+
     // Simple base64-like encoding without Buffer
     const tokenString = `${timestamp}:${uid}:${Math.abs(hash).toString(16)}`;
     const token = btoa(tokenString);
@@ -321,7 +321,7 @@ class AgoraService {
             console.error('🚫 INVALID APP ID - Check your Agora App ID');
           } else if (reason === ConnectionChangedReasonType.ConnectionChangedInvalidChannelName) {
             console.error('🚫 INVALID CHANNEL NAME - Check channel name format');
-          } else if (reason === ConnectionChangedReasonType.ConnectionChangedInvalidToken || 
+          } else if (reason === ConnectionChangedReasonType.ConnectionChangedInvalidToken ||
                      reason === ConnectionChangedReasonType.ConnectionChangedTokenExpired) {
             console.error('🚫 TOKEN ISSUE - Check token validity');
             console.error('🚫 Token details:', {
@@ -506,7 +506,7 @@ class AgoraService {
       // Get token from backend
       console.log('🔑 Getting token for channel...');
       let token: string | null = null;
-      
+
       try {
         token = await this.getToken(channelId, uid);
         if (token) {
@@ -539,7 +539,7 @@ class AgoraService {
           isWifi: netInfo.type === 'wifi',
           isCellular: netInfo.type === 'cellular'
         });
-        
+
         if (!netInfo.isConnected || !netInfo.isInternetReachable) {
           throw new Error('No internet connection available');
         }
@@ -550,7 +550,7 @@ class AgoraService {
 
       // For testing purposes, let's try without token first if the token seems invalid
       const shouldTryWithoutToken = false; // Set to true for testing without token
-      
+
       if (shouldTryWithoutToken) {
         console.log('🧪 TESTING: Trying to join without token for debugging');
         token = '';
@@ -611,7 +611,7 @@ class AgoraService {
         uid: uid,
         engineInitialized: this.initialized,
         engineExists: !!this.engine,
-        appIdLength: AGORA_APP_ID?.length,
+        appIdLength: CONFIG.AGORA.appId?.length,
       });
       throw error;
     }
