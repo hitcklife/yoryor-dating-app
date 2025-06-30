@@ -2,10 +2,8 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import axios from 'axios';
-
-// Define the base URL for the API
-const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
+import { apiClient } from './api-client';
+import { CONFIG } from './config';
 
 // Configure how notifications appear when the app is in the foreground
 Notifications.setNotificationHandler({
@@ -77,7 +75,7 @@ class NotificationService {
 
       // Get the token using the app's slug as the projectId
       const token = (await Notifications.getExpoPushTokenAsync({
-        projectId: 'f0228624-4b64-4543-a64a-7d0c30c19649', // Using the app's slug from app.json
+        projectId: CONFIG.EXPO_PROJECT_ID, // Using the app's slug from config
       })).data;
 
       // Store the token
@@ -129,18 +127,8 @@ class NotificationService {
 
       console.log('Registering device with backend:', deviceInfo);
 
-      // Send the token and device info to the backend
-      await axios.post(
-        `${API_BASE_URL}/api/v1/device-tokens`,
-        deviceInfo,
-        {
-          headers: {
-            Authorization: `Bearer ${authToken}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-          },
-        }
-      );
+      // Send the token and device info to the backend using centralized client
+      await apiClient.deviceTokens.register(deviceInfo);
       console.log('Device registered with backend successfully');
     } catch (error) {
       console.error('Error registering device with backend:', error);

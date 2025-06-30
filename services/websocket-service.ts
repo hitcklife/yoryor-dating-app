@@ -1,18 +1,9 @@
 import Echo from 'laravel-echo';
 import Pusher from 'pusher-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import axios from 'axios';
 import { notificationService } from './notification-service';
-
-// Define the base URL for the API
-const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
-
-// Pusher configuration
-const PUSHER_CONFIG = {
-  key: '71d10c58900cc58fb02d',
-  cluster: 'us2',
-  forceTLS: true,
-};
+import { apiClient } from './api-client';
+import { CONFIG } from './config';
 
 class WebSocketService {
   private echo: Echo | null = null;
@@ -22,7 +13,7 @@ class WebSocketService {
   private errorCallbacks: ((error: any) => void)[] = [];
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
-  private reconnectTimeout: number = null;
+  private reconnectTimeout: number | null = null;
   private currentUserId: number | null = null;
 
   /**
@@ -80,10 +71,10 @@ class WebSocketService {
       await this.getCurrentUserId();
 
       // Initialize Pusher client first
-      this.pusherClient = new Pusher(PUSHER_CONFIG.key, {
-        cluster: PUSHER_CONFIG.cluster,
-        forceTLS: PUSHER_CONFIG.forceTLS,
-        authEndpoint: `${API_BASE_URL}/api/v1/broadcasting/auth`,
+      this.pusherClient = new Pusher(CONFIG.PUSHER.key, {
+        cluster: CONFIG.PUSHER.cluster,
+        forceTLS: CONFIG.PUSHER.forceTLS,
+        authEndpoint: `${CONFIG.API_URL}/api/v1/broadcasting/auth`,
         auth: {
           headers: {
             Authorization: `Bearer ${token}`,
@@ -121,32 +112,27 @@ class WebSocketService {
       // Initialize Laravel Echo with the pre-configured Pusher client
       this.echo = new Echo({
         broadcaster: 'pusher',
-        key: PUSHER_CONFIG.key,
-        cluster: PUSHER_CONFIG.cluster,
-        forceTLS: PUSHER_CONFIG.forceTLS,
+        key: CONFIG.PUSHER.key,
+        cluster: CONFIG.PUSHER.cluster,
+        forceTLS: CONFIG.PUSHER.forceTLS,
         client: this.pusherClient,
-        authorizer: (channel: any) => {
-          return {
-            authorize: (socketId: string, callback: Function) => {
-              axios.post(`${API_BASE_URL}/api/v1/broadcasting/auth`, {
-                socket_id: socketId,
-                channel_name: channel.name
-              }, {
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  Accept: 'application/json',
-                }
-              })
-              .then(response => {
-                callback(false, response.data);
-              })
-              .catch(error => {
-                console.error('Authorization error:', error);
-                callback(true, error);
-              });
-            }
-          };
-        }
+                  authorizer: (channel: any) => {
+            return {
+              authorize: (socketId: string, callback: Function) => {
+                apiClient.broadcasting.auth({
+                  socket_id: socketId,
+                  channel_name: channel.name
+                })
+                .then((response: any) => {
+                  callback(false, response.data);
+                })
+                .catch((error: any) => {
+                  console.error('Authorization error:', error);
+                  callback(true, error);
+                });
+              }
+            };
+          }
       });
 
       console.log('WebSocket service initialized successfully');

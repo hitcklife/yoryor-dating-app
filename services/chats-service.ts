@@ -1,10 +1,8 @@
-import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { sqliteService } from "./sqlite-service";
 import NetInfo from "@react-native-community/netinfo";
-
-// Add base URL configuration (same as in auth-context)
-const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
+import { apiClient } from "./api-client";
+import { CONFIG, getAssetUrl } from "./config";
 
 // Types for the chats API response
 export interface ProfilePhoto {
@@ -204,23 +202,13 @@ export function getProfilePhotoUrl(user: OtherUser | null, useHighRes: boolean =
       : user.profile_photo.medium_url;
 
     if (photoUrl) {
-      // Check if the URL is already absolute
-      if (photoUrl.startsWith('http')) {
-        return photoUrl;
-      } else {
-        return `${API_BASE_URL}${photoUrl}`;
-      }
+      return getAssetUrl(photoUrl);
     }
   }
 
   // Fallback to profile_photo_path if profile_photo is not available
   if (user.profile_photo_path) {
-    // Check if the URL is already absolute
-    if (user.profile_photo_path.startsWith('http')) {
-      return user.profile_photo_path;
-    } else {
-      return `${API_BASE_URL}${user.profile_photo_path}`;
-    }
+    return getAssetUrl(user.profile_photo_path);
   }
 
   return null;
@@ -246,7 +234,7 @@ class ChatsService {
 
   async getChats(page: number = 1): Promise<ChatsResponse | null> {
     try {
-      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
+      const isConnected = await NetInfo.fetch().then((state: any) => state.isConnected);
 
       if (!isConnected) {
         console.log('No internet connection, fetching from SQLite...');
@@ -259,7 +247,7 @@ class ChatsService {
               chats: offlineChats,
               pagination: {
                 total: offlineChats.length,
-                per_page: 10,
+                per_page: CONFIG.APP.defaultPageSize,
                 current_page: 1,
                 last_page: 1
               }
@@ -268,29 +256,15 @@ class ChatsService {
         }
       }
 
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
+      const response = await apiClient.chats.getAll(page, CONFIG.APP.defaultPageSize);
 
-      const response = await axios.get(`${API_BASE_URL}/api/v1/chats`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-        },
-        params: {
-          page,
-          per_page: 10
-        }
-      });
-
-      if (response.data.status === 'success') {
-        const chatsData = response.data.data;
+      if (response.status === 'success') {
+        const chatsData = response.data;
 
         // Store chats in SQLite for offline access
         await sqliteService.storeChats(chatsData.chats);
 
-        return response.data;
+        return response as ChatsResponse;
       }
 
       return null;
@@ -306,7 +280,7 @@ class ChatsService {
             chats: offlineChats,
             pagination: {
               total: offlineChats.length,
-              per_page: 10,
+              per_page: CONFIG.APP.defaultPageSize,
               current_page: 1,
               last_page: 1
             }
@@ -353,24 +327,10 @@ class ChatsService {
 
       // If we have internet, fetch fresh data only if we don't have recent local data
       if (isConnected) {
-        const token = await AsyncStorage.getItem('auth_token');
-        if (!token) {
-          throw new Error('No auth token found');
-        }
+        const response = await apiClient.chats.getById(chatId, page, CONFIG.APP.chatMessagesPageSize);
 
-        const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Accept': 'application/json',
-          },
-          params: {
-            page,
-            per_page: 20
-          }
-        });
-
-        if (response.data.status === 'success') {
-          const chatData = response.data.data;
+        if (response.status === 'success' && response.data) {
+          const chatData = response.data;
 
           // Add ownership to messages based on current user ID
           const messagesWithOwnership = addMessageOwnership(chatData.messages, currentUserId);
@@ -379,12 +339,12 @@ class ChatsService {
           await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
 
           return {
-            ...response.data,
+            ...response,
             data: {
               ...chatData,
               messages: messagesWithOwnership
             }
-          };
+          } as ChatDetailResponse;
         }
       }
 
@@ -443,32 +403,21 @@ class ChatsService {
 
   async sendMessage(chatId: number, content: string, messageType: string = 'text', mediaUrl?: string, mediaData?: any, replyToMessageId?: number): Promise<SendMessageResponse | null> {
     try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
       const currentUserId = await this.getCurrentUser();
       if (!currentUserId) {
         throw new Error('Current user ID not found');
       }
 
-      const response = await axios.post(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, {
+      const response = await apiClient.chats.sendMessage(chatId, {
         content,
         message_type: messageType,
         media_url: mediaUrl,
         media_data: mediaData,
         reply_to_message_id: replyToMessageId
-      }, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        }
       });
 
-      if (response.data.status === 'success') {
-        const message = response.data.data.message;
+      if (response.status === 'success' && response.data) {
+        const message = response.data.message;
 
         // Add ownership to the sent message
         const messageWithOwnership = {
@@ -480,11 +429,11 @@ class ChatsService {
         await sqliteService.storeMessage(messageWithOwnership);
 
         return {
-          ...response.data,
+          ...response,
           data: {
             message: messageWithOwnership
           }
-        };
+        } as SendMessageResponse;
       }
 
       return null;
@@ -496,26 +445,15 @@ class ChatsService {
 
   async sendVoiceMessage(chatId: number, formData: FormData): Promise<SendMessageResponse | null> {
     try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
       const currentUserId = await this.getCurrentUser();
       if (!currentUserId) {
         throw new Error('Current user ID not found');
       }
 
-      const response = await axios.post(`${API_BASE_URL}/api/v1/chats/${chatId}/messages`, formData, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-          'Content-Type': 'multipart/form-data'
-        }
-      });
+      const response = await apiClient.chats.sendVoiceMessage(chatId, formData);
 
-      if (response.data.status === 'success') {
-        const message = response.data.data.message;
+      if (response.status === 'success' && response.data) {
+        const message = response.data.message;
 
         // Add ownership to the sent message
         const messageWithOwnership = {
@@ -527,11 +465,11 @@ class ChatsService {
         await sqliteService.storeMessage(messageWithOwnership);
 
         return {
-          ...response.data,
+          ...response,
           data: {
             message: messageWithOwnership
           }
-        };
+        } as SendMessageResponse;
       }
 
       return null;
@@ -595,22 +533,8 @@ class ChatsService {
         };
       }
 
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
       console.log('Fetching older messages from server...');
-      const response = await axios.get(`${API_BASE_URL}/api/v1/chats/${chatId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-        },
-        params: {
-          before_message_id: oldestMessageId,
-          per_page: 20
-        }
-      });
+      const response = await apiClient.chats.loadMoreMessages(chatId, 1, CONFIG.APP.chatMessagesPageSize);
 
       if (response.data.status === 'success') {
         const messages = response.data.data.messages;

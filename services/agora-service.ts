@@ -19,10 +19,8 @@ import {
   AudioScenarioType,
 } from 'react-native-agora';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import axios from 'axios';
-
-const AGORA_APP_ID = "8fa7c231530146ff8522ececbbe3d7a5";
-const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
+import { apiClient } from './api-client';
+import { CONFIG } from './config';
 
 class AgoraService {
   private engine: IRtcEngine | null = null;
@@ -48,22 +46,8 @@ class AgoraService {
         throw new Error('No auth token available');
       }
 
-      // Try to get token from backend
-      const response = await axios.post(
-        `${API_BASE_URL}/api/v1/agora/token`,
-        {
-          channel_name: channelId,
-          uid: uid.toString(),
-          role: 'publisher'
-        },
-        {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          }
-        }
-      );
+      // Try to get token from backend using centralized client
+      const response = await apiClient.agora.getToken(channelId, uid.toString(), 'publisher');
 
       console.log('🔑 Backend response:', JSON.stringify(response.data, null, 2));
 
@@ -115,7 +99,7 @@ class AgoraService {
     // In production, use proper Agora token generation
     const timestamp = Math.floor(Date.now() / 1000);
     const randomString = Math.random().toString(36).substring(2);
-    const tokenData = `${AGORA_APP_ID}${channelId}${uid}${timestamp}${randomString}`;
+    const tokenData = `${CONFIG.AGORA.appId}${channelId}${uid}${timestamp}${randomString}`;
     
     // Simple hash function
     let hash = 0;
@@ -155,7 +139,7 @@ class AgoraService {
 
       // Initialize with basic configuration
       this.engine.initialize({
-        appId: AGORA_APP_ID,
+        appId: CONFIG.AGORA.appId,
         logConfig: {
           level: 0x0001, // Only log errors
         },
@@ -426,20 +410,20 @@ class AgoraService {
   async joinChannel(channelId: string, uid: number = 0): Promise<void> {
     try {
       // Validate Agora App ID
-      if (!AGORA_APP_ID || AGORA_APP_ID.length !== 32) {
-        throw new Error(`Invalid Agora App ID format. Expected 32 characters, got: ${AGORA_APP_ID?.length || 0}`);
+      if (!CONFIG.AGORA.appId || CONFIG.AGORA.appId.length !== 32) {
+        throw new Error(`Invalid Agora App ID format. Expected 32 characters, got: ${CONFIG.AGORA.appId?.length || 0}`);
       }
 
       // Check if App ID is hexadecimal
       const hexPattern = /^[0-9a-fA-F]{32}$/;
-      if (!hexPattern.test(AGORA_APP_ID)) {
-        throw new Error(`Invalid Agora App ID format. Must be 32 hexadecimal characters, got: ${AGORA_APP_ID}`);
+      if (!hexPattern.test(CONFIG.AGORA.appId)) {
+        throw new Error(`Invalid Agora App ID format. Must be 32 hexadecimal characters, got: ${CONFIG.AGORA.appId}`);
       }
 
       console.log('🔍 App ID validation passed:', {
-        appId: AGORA_APP_ID,
-        length: AGORA_APP_ID.length,
-        isHex: hexPattern.test(AGORA_APP_ID)
+        appId: CONFIG.AGORA.appId,
+        length: CONFIG.AGORA.appId.length,
+        isHex: hexPattern.test(CONFIG.AGORA.appId)
       });
 
       if (!this.initialized || !this.engine) {
@@ -627,7 +611,7 @@ class AgoraService {
         uid: uid,
         engineInitialized: this.initialized,
         engineExists: !!this.engine,
-        appIdLength: AGORA_APP_ID?.length,
+        appIdLength: CONFIG.AGORA.appId?.length,
       });
       throw error;
     }
