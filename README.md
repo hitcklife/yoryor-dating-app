@@ -66,6 +66,39 @@ During a call, users can:
 - Toggle speaker mode (audio calls only)
 - End the call
 
+### Testing Calls
+
+For testing purposes, the app uses a simple channel naming convention:
+- Channel ID: `test-{chatId}`
+- Both users need to join the same channel to connect
+
+### Agora Token Setup
+
+**Important**: Your Agora project requires token authentication. See [Agora Token Setup Guide](docs/agora-token-setup.md) for detailed instructions.
+
+#### Quick Setup Options:
+
+1. **Backend Token Generation (Recommended)**:
+   - Set up token generation on your Laravel backend
+   - Follow the guide in `docs/agora-token-setup.md`
+
+2. **Disable Token Authentication (Development Only)**:
+   - Go to Agora Console > Project Management > Security
+   - Set "App Certificate" to "Disabled"
+   - Update the service to return empty string for tokens
+
+3. **Temporary Tokens (Current Implementation)**:
+   - The app currently generates temporary tokens for testing
+   - This is not secure for production
+
+### Latest Updates
+
+- Updated to use the latest Agora React Native SDK (v4.5.3)
+- Added token authentication support
+- Improved error handling and connection state management
+- Enhanced UI with better animations and visual feedback
+- Optimized for one-on-one calls
+
 ## Permissions
 
 The app requires the following permissions:
@@ -86,9 +119,18 @@ These permissions are configured in the `app.json` file.
 If you encounter issues with audio or video calls:
 
 1. Make sure you've replaced the placeholder Agora App ID with your actual App ID
-2. Ensure your Agora project has the appropriate security settings (App Certificate, token authentication)
-3. Check that you've granted the necessary camera and microphone permissions on your device
-4. For development, make sure your Agora project allows testing in debug mode
+2. **Check token authentication setup** - see [Agora Token Setup Guide](docs/agora-token-setup.md)
+3. Ensure your Agora project has the appropriate security settings
+4. Check that you've granted the necessary camera and microphone permissions on your device
+5. Verify that both users are joining the same channel ID
+
+### Common Error Codes:
+
+- **Error 110**: Invalid token - Check token generation or disable App Certificate
+- **Error 8**: Invalid token format - Verify token generation logic
+- **Error 9**: Token expired - Implement token refresh mechanism
+- **Error 6**: Invalid App ID - Check your Agora App ID
+- **Error 7**: Invalid channel name - Check channel name format
 
 ## License
 

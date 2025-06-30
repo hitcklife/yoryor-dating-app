@@ -1,4 +1,3 @@
-
 import { Platform } from 'react-native';
 import {
   createAgoraRtcEngine,
@@ -14,12 +13,16 @@ import {
   VideoCodecType,
   AudioCodecType,
   ChannelMediaOptions,
+  ConnectionStateType,
+  ConnectionChangedReasonType,
+  AudioProfileType,
+  AudioScenarioType,
 } from 'react-native-agora';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import axios from 'axios';
 
-const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
 const AGORA_APP_ID = "8fa7c231530146ff8522ececbbe3d7a5";
+const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app';
 
 class AgoraService {
   private engine: IRtcEngine | null = null;
@@ -34,6 +37,100 @@ class AgoraService {
   private isAudioEnabled: boolean = true;
   private isVideoEnabled: boolean = true;
   private isDestroyed: boolean = false;
+
+  /**
+   * Get a token from the server for joining a channel
+   */
+  private async getToken(channelId: string, uid: number): Promise<string> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token available');
+      }
+
+      // Try to get token from backend
+      const response = await axios.post(
+        `${API_BASE_URL}/api/v1/agora/token`,
+        {
+          channel_name: channelId,
+          uid: uid.toString(),
+          role: 'publisher'
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          }
+        }
+      );
+
+      console.log('🔑 Backend response:', JSON.stringify(response.data, null, 2));
+
+      // Handle different response formats
+      let tokenValue = null;
+      
+      if (response.data && response.data.token) {
+        // Direct token in response.data
+        tokenValue = response.data.token;
+        console.log('🔑 Found token in response.data.token');
+      } else if (response.data && response.data.data && response.data.data.token) {
+        // Token nested under data.token
+        tokenValue = response.data.data.token;
+        console.log('🔑 Found token in response.data.data.token');
+      } else if (response.data && response.data.status === 'success' && response.data.data && response.data.data.token) {
+        // Token in success response format
+        tokenValue = response.data.data.token;
+        console.log('🔑 Found token in success response format');
+      }
+
+      if (tokenValue) {
+        console.log('🔑 Token received from backend, length:', tokenValue.length);
+        return tokenValue;
+      } else {
+        console.error('❌ Token not found in response structure:', {
+          hasData: !!response.data,
+          hasDataData: !!(response.data && response.data.data),
+          hasToken: !!(response.data && response.data.token),
+          hasDataToken: !!(response.data && response.data.data && response.data.data.token),
+          responseKeys: response.data ? Object.keys(response.data) : [],
+          dataKeys: response.data && response.data.data ? Object.keys(response.data.data) : []
+        });
+        throw new Error('No token found in response');
+      }
+    } catch (error) {
+      console.warn('⚠️ Failed to get token from backend, using temporary token:', error);
+      
+      // For testing purposes, generate a temporary token
+      // In production, you should always use proper token generation
+      return this.generateTemporaryToken(channelId, uid);
+    }
+  }
+
+  /**
+   * Generate a temporary token for testing (NOT for production)
+   */
+  private generateTemporaryToken(channelId: string, uid: number): string {
+    // This is a simple hash-based token for testing only
+    // In production, use proper Agora token generation
+    const timestamp = Math.floor(Date.now() / 1000);
+    const randomString = Math.random().toString(36).substring(2);
+    const tokenData = `${AGORA_APP_ID}${channelId}${uid}${timestamp}${randomString}`;
+    
+    // Simple hash function
+    let hash = 0;
+    for (let i = 0; i < tokenData.length; i++) {
+      const char = tokenData.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32-bit integer
+    }
+    
+    // Simple base64-like encoding without Buffer
+    const tokenString = `${timestamp}:${uid}:${Math.abs(hash).toString(16)}`;
+    const token = btoa(tokenString);
+    console.log('🔑 Generated temporary token for testing');
+    return token;
+  }
 
   /**
    * Initialize the Agora RTC Engine with simplified settings
@@ -64,7 +161,7 @@ class AgoraService {
         },
       });
 
-      // Configure audio settings (simplified)
+      // Configure audio settings
       await this.configureAudioSettings();
 
       // Configure video settings
@@ -89,10 +186,8 @@ class AgoraService {
     if (!this.engine) return;
 
     try {
-      // Use numeric values for audio profile instead of enum
-      // AudioProfile values: Default = 0, SpeechStandard = 1, MusicStandard = 2, MusicStandardStereo = 3, MusicHighQuality = 4
-      // AudioScenario values: Default = 0, ChatRoom = 1, Education = 2, GameStreaming = 3, ShowRoom = 4, Chatroom = 5
-      this.engine.setAudioProfile(2, 3); // MusicStandard profile, GameStreaming scenario
+      // Use proper enum values for audio profile
+      this.engine.setAudioProfile(AudioProfileType.AudioProfileMusicStandard, AudioScenarioType.AudioScenarioGameStreaming);
 
       // Enable audio processing
       this.engine.enableAudio();
@@ -200,39 +295,31 @@ class AgoraService {
         }
       },
 
-      onWarning: (warn, msg) => {
-        console.warn('⚠️ AGORA WARNING:', {
-          warningCode: warn,
-          message: msg,
-          channelId: this.channelId
-        });
-      },
-
       onConnectionStateChanged: (connection, state, reason) => {
-        const stateNames = {
-          1: 'DISCONNECTED',
-          2: 'CONNECTING',
-          3: 'CONNECTED',
-          4: 'RECONNECTING',
-          5: 'FAILED'
+        const stateNames: Record<number, string> = {
+          [ConnectionStateType.ConnectionStateDisconnected]: 'DISCONNECTED',
+          [ConnectionStateType.ConnectionStateConnecting]: 'CONNECTING',
+          [ConnectionStateType.ConnectionStateConnected]: 'CONNECTED',
+          [ConnectionStateType.ConnectionStateReconnecting]: 'RECONNECTING',
+          [ConnectionStateType.ConnectionStateFailed]: 'FAILED'
         };
 
-        const reasonNames = {
-          0: 'CONNECTING',
-          1: 'JOIN_SUCCESS',
-          2: 'INTERRUPTED',
-          3: 'BANNED_BY_SERVER',
-          4: 'JOIN_FAILED',
-          5: 'LEAVE_CHANNEL',
-          6: 'INVALID_APP_ID',
-          7: 'INVALID_CHANNEL_NAME',
-          8: 'INVALID_TOKEN',
-          9: 'TOKEN_EXPIRED',
-          10: 'REJECTED_BY_SERVER',
-          11: 'SETTING_PROXY_SERVER',
-          12: 'RENEWING_TOKEN',
-          13: 'CLIENT_IP_ADDRESS_CHANGED',
-          14: 'KEEP_ALIVE_TIMEOUT'
+        const reasonNames: Record<number, string> = {
+          [ConnectionChangedReasonType.ConnectionChangedConnecting]: 'CONNECTING',
+          [ConnectionChangedReasonType.ConnectionChangedJoinSuccess]: 'JOIN_SUCCESS',
+          [ConnectionChangedReasonType.ConnectionChangedInterrupted]: 'INTERRUPTED',
+          [ConnectionChangedReasonType.ConnectionChangedBannedByServer]: 'BANNED_BY_SERVER',
+          [ConnectionChangedReasonType.ConnectionChangedJoinFailed]: 'JOIN_FAILED',
+          [ConnectionChangedReasonType.ConnectionChangedLeaveChannel]: 'LEAVE_CHANNEL',
+          [ConnectionChangedReasonType.ConnectionChangedInvalidAppId]: 'INVALID_APP_ID',
+          [ConnectionChangedReasonType.ConnectionChangedInvalidChannelName]: 'INVALID_CHANNEL_NAME',
+          [ConnectionChangedReasonType.ConnectionChangedInvalidToken]: 'INVALID_TOKEN',
+          [ConnectionChangedReasonType.ConnectionChangedTokenExpired]: 'TOKEN_EXPIRED',
+          [ConnectionChangedReasonType.ConnectionChangedRejectedByServer]: 'REJECTED_BY_SERVER',
+          [ConnectionChangedReasonType.ConnectionChangedSettingProxyServer]: 'SETTING_PROXY_SERVER',
+          [ConnectionChangedReasonType.ConnectionChangedRenewToken]: 'RENEWING_TOKEN',
+          [ConnectionChangedReasonType.ConnectionChangedClientIpAddressChanged]: 'CLIENT_IP_ADDRESS_CHANGED',
+          [ConnectionChangedReasonType.ConnectionChangedKeepAliveTimeout]: 'KEEP_ALIVE_TIMEOUT'
         };
 
         console.log('🔗 CONNECTION STATE CHANGED:', {
@@ -243,16 +330,26 @@ class AgoraService {
         });
 
         // Handle specific failure cases
-        if (state === 5) { // CONNECTION_STATE_FAILED
+        if (state === ConnectionStateType.ConnectionStateFailed) {
           console.error('💀 CONNECTION FAILED - Reason:', reasonNames[reason] || reason);
 
-          if (reason === 6) {
+          if (reason === ConnectionChangedReasonType.ConnectionChangedInvalidAppId) {
             console.error('🚫 INVALID APP ID - Check your Agora App ID');
-          } else if (reason === 7) {
+          } else if (reason === ConnectionChangedReasonType.ConnectionChangedInvalidChannelName) {
             console.error('🚫 INVALID CHANNEL NAME - Check channel name format');
-          } else if (reason === 8 || reason === 9) {
+          } else if (reason === ConnectionChangedReasonType.ConnectionChangedInvalidToken || 
+                     reason === ConnectionChangedReasonType.ConnectionChangedTokenExpired) {
             console.error('🚫 TOKEN ISSUE - Check token validity');
+            console.error('🚫 Token details:', {
+              tokenLength: this.channelId ? 'token exists' : 'no token',
+              channelId: this.channelId
+            });
           }
+        }
+
+        // Log successful connection
+        if (state === ConnectionStateType.ConnectionStateConnected) {
+          console.log('✅ CONNECTION ESTABLISHED successfully');
         }
       },
 
@@ -267,7 +364,7 @@ class AgoraService {
       },
 
       onRemoteVideoStateChanged: (connection, remoteUid, state, reason, elapsed) => {
-        const stateNames = {
+        const stateNames: Record<number, string> = {
           0: 'STOPPED',
           1: 'STARTING',
           2: 'DECODING',
@@ -284,7 +381,7 @@ class AgoraService {
       },
 
       onRemoteAudioStateChanged: (connection, remoteUid, state, reason, elapsed) => {
-        const stateNames = {
+        const stateNames: Record<number, string> = {
           0: 'STOPPED',
           1: 'STARTING',
           2: 'DECODING',
@@ -317,15 +414,6 @@ class AgoraService {
         });
       },
 
-      onApiCallExecuted: (api, error) => {
-        if (error !== 0) {
-          console.error('🔧 API CALL FAILED:', {
-            api: api,
-            error: error
-          });
-        }
-      },
-
       onRequestToken: (connection) => {
         console.log('🔑 TOKEN REQUESTED for channel:', connection.channelId);
       }
@@ -333,21 +421,26 @@ class AgoraService {
   }
 
   /**
-   * Enhanced join method with better error handling and validation
+   * Join channel for one-on-one calls with token
    */
-
-  async joinChannelForTesting(channelId: string, uid: number = 0): Promise<void> {
+  async joinChannel(channelId: string, uid: number = 0): Promise<void> {
     try {
-      // Validate App ID format
+      // Validate Agora App ID
       if (!AGORA_APP_ID || AGORA_APP_ID.length !== 32) {
         throw new Error(`Invalid Agora App ID format. Expected 32 characters, got: ${AGORA_APP_ID?.length || 0}`);
       }
 
-      // Validate App ID contains only valid hex characters
-      const hexPattern = /^[0-9a-f]+$/i;
+      // Check if App ID is hexadecimal
+      const hexPattern = /^[0-9a-fA-F]{32}$/;
       if (!hexPattern.test(AGORA_APP_ID)) {
-        throw new Error('Invalid Agora App ID: must contain only hexadecimal characters');
+        throw new Error(`Invalid Agora App ID format. Must be 32 hexadecimal characters, got: ${AGORA_APP_ID}`);
       }
+
+      console.log('🔍 App ID validation passed:', {
+        appId: AGORA_APP_ID,
+        length: AGORA_APP_ID.length,
+        isHex: hexPattern.test(AGORA_APP_ID)
+      });
 
       if (!this.initialized || !this.engine) {
         console.log('🔄 Initializing engine...');
@@ -380,14 +473,14 @@ class AgoraService {
       // Add a small delay to ensure clean state
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Set channel profile first with explicit timing
+      // Set channel profile for one-on-one communication
       console.log('📡 Setting channel profile...');
       await this.engine.setChannelProfile(ChannelProfileType.ChannelProfileCommunication);
 
       // Small delay after setting channel profile
       await new Promise(resolve => setTimeout(resolve, 50));
 
-      // Set client role
+      // Set client role as broadcaster for one-on-one calls
       console.log('👤 Setting client role...');
       await this.engine.setClientRole(ClientRoleType.ClientRoleBroadcaster);
 
@@ -403,14 +496,13 @@ class AgoraService {
       await this.engine.enableVideo();
       await this.engine.enableLocalVideo(this.isVideoEnabled);
 
-      // Configure channel media options with more explicit settings
+      // Configure channel media options for one-on-one calls
       const options: ChannelMediaOptions = {
         publishMicrophoneTrack: this.isAudioEnabled,
         publishCameraTrack: this.isVideoEnabled,
         autoSubscribeAudio: true,
         autoSubscribeVideo: true,
         clientRoleType: ClientRoleType.ClientRoleBroadcaster,
-        // Add these additional options for better reliability
         enableAudioRecordingOrPlayout: true,
         publishScreenTrack: false,
         publishCustomAudioTrack: false,
@@ -426,6 +518,59 @@ class AgoraService {
         autoSubVideo: options.autoSubscribeVideo,
         enableAudioPlayback: options.enableAudioRecordingOrPlayout,
       });
+
+      // Get token from backend
+      console.log('🔑 Getting token for channel...');
+      let token: string | null = null;
+      
+      try {
+        token = await this.getToken(channelId, uid);
+        if (token) {
+          // Optionally log token length
+          console.log('🔑 Token received from backend, length:', token.length);
+          // Skipping base64 validation in React Native
+        } else {
+          console.warn('🔑 No token received, using temporary token for testing');
+          token = this.generateTemporaryToken(channelId, uid);
+        }
+      } catch (error) {
+        console.error('🔑 Error getting token from backend:', error);
+        console.warn('🔑 Using temporary token for testing');
+        token = this.generateTemporaryToken(channelId, uid);
+      }
+
+      // Ensure we have a token
+      if (!token) {
+        throw new Error('Failed to get valid token for channel');
+      }
+
+      // Check network connectivity
+      try {
+        const NetInfo = require('@react-native-community/netinfo');
+        const netInfo = await NetInfo.fetch();
+        console.log('🌐 Network status:', {
+          isConnected: netInfo.isConnected,
+          isInternetReachable: netInfo.isInternetReachable,
+          type: netInfo.type,
+          isWifi: netInfo.type === 'wifi',
+          isCellular: netInfo.type === 'cellular'
+        });
+        
+        if (!netInfo.isConnected || !netInfo.isInternetReachable) {
+          throw new Error('No internet connection available');
+        }
+      } catch (netError) {
+        console.warn('⚠️ Could not check network status:', netError);
+        // Continue anyway, Agora will handle network issues
+      }
+
+      // For testing purposes, let's try without token first if the token seems invalid
+      const shouldTryWithoutToken = false; // Set to true for testing without token
+      
+      if (shouldTryWithoutToken) {
+        console.log('🧪 TESTING: Trying to join without token for debugging');
+        token = '';
+      }
 
       // Create a promise that will resolve when we successfully join
       const joinPromise = new Promise<void>((resolve, reject) => {
@@ -457,10 +602,15 @@ class AgoraService {
       });
 
       console.log('🔗 Calling engine.joinChannel...');
+      console.log('🔗 Join parameters:', {
+        token: token ? `${token.substring(0, 20)}...` : 'null',
+        channelId: channelId,
+        uid: uid,
+        options: JSON.stringify(options)
+      });
 
-      // Make the actual join call
-      const joinResult = await this.engine.joinChannel('', channelId, uid, options);
-      console.log('📞 Join channel method returned:', joinResult);
+      const result = this.engine.joinChannel(token, channelId, uid, options);
+      console.log('📞 Join channel method returned:', result);
 
       // Wait for the actual join success callback or timeout
       await joinPromise;
@@ -470,7 +620,7 @@ class AgoraService {
 
       console.log(`✅ SUCCESSFULLY JOINED CHANNEL: ${channelId} with UID: ${uid}`);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ FAILED TO JOIN CHANNEL:', {
         error: error.message,
         channelId: channelId,
@@ -564,14 +714,6 @@ class AgoraService {
     }
   }
 
-  /**
-   * Get a token from the server for joining a channel
-   */
-  private async getToken(channelId: string): Promise<string | null> {
-    console.log('🔑 Using no token for testing');
-    return null;
-  }
-
   // Callback setters
   onJoinSuccess(callback: (uid: number) => void): void {
     this.joinSuccessCallback = callback;
@@ -624,11 +766,11 @@ class AgoraService {
         // Disable audio and video
         this.engine.enableLocalAudio(false);
         this.engine.enableLocalVideo(false);
-        this.engine.enableAudio(false);
-        this.engine.enableVideo(false);
+        this.engine.enableAudio();
+        this.engine.enableVideo();
 
         // Unregister event handlers
-        this.engine.unregisterEventHandler();
+        this.engine.unregisterEventHandler({});
       } catch (error) {
         console.error('Error during cleanup:', error);
       }

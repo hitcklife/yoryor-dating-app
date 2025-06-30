@@ -8,7 +8,6 @@ import {
   StatusBar,
   Animated,
   Dimensions,
-  PanResponder,
   PermissionsAndroid,
   Alert,
 } from 'react-native';
@@ -22,7 +21,6 @@ import {
   AvatarImage,
   Center,
   Pressable,
-  LinearGradient,
   Badge,
   BadgeText,
 } from '@gluestack-ui/themed';
@@ -30,9 +28,9 @@ import { useColorScheme } from 'nativewind';
 import { agoraService } from '@/services/agora-service';
 import {
   RtcSurfaceView,
-  VideoRenderMode,
   VideoSourceType,
 } from 'react-native-agora';
+import { LinearGradient } from 'expo-linear-gradient';
 
 interface CallScreenProps {
   chatId: number;
@@ -46,13 +44,13 @@ interface CallScreenProps {
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
 const CallScreen: React.FC<CallScreenProps> = ({
-                                                 chatId,
-                                                 userId,
-                                                 userName,
-                                                 userAvatar,
-                                                 isVideoCall,
-                                                 onEndCall,
-                                               }) => {
+  chatId,
+  userId,
+  userName,
+  userAvatar,
+  isVideoCall,
+  onEndCall,
+}) => {
   const { colorScheme } = useColorScheme();
   const isDark = colorScheme === 'dark';
 
@@ -71,12 +69,11 @@ const CallScreen: React.FC<CallScreenProps> = ({
   // Animations
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const localVideoPosition = useRef(new Animated.ValueXY({ x: screenWidth - 120, y: 100 })).current;
   const controlsOpacity = useRef(new Animated.Value(1)).current;
 
   // Timer for call duration
-  const durationTimer = useRef<NodeJS.Timeout | null>(null);
-  const controlsTimer = useRef<NodeJS.Timeout | null>(null);
+  const durationTimer = useRef<any>(null);
+  const controlsTimer = useRef<any>(null);
 
   useEffect(() => {
     requestPermissions();
@@ -156,8 +153,8 @@ const CallScreen: React.FC<CallScreenProps> = ({
       const testChannelId = `test-${chatId}`;
       console.log('Joining channel:', testChannelId);
 
-      // Use the testing method without backend
-      await agoraService.joinChannelForTesting(testChannelId, userId);
+      // Use the updated join method without backend
+      await agoraService.joinChannel(testChannelId, userId);
 
       if (!isVideoCall) {
         await agoraService.toggleVideo(false);
@@ -183,18 +180,18 @@ const CallScreen: React.FC<CallScreenProps> = ({
 
   const startPulseAnimation = () => {
     Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.1,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-        ])
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+      ])
     ).start();
   };
 
@@ -296,208 +293,208 @@ const CallScreen: React.FC<CallScreenProps> = ({
 
   const renderVideoCall = () => {
     return (
-        <Box flex={1} position="relative" bg="$backgroundDark900">
-          {/* Remote user's video */}
-          {remoteUid ? (
-              <Box flex={1}>
-                <RtcSurfaceView
-                    canvas={{
-                      uid: remoteUid,
-                      sourceType: VideoSourceType.VideoSourceRemote,
-                      renderMode: VideoRenderMode.RenderModeHidden,
-                    }}
-                    style={styles.fullScreenVideo}
-                />
-                <Box
-                    position="absolute"
-                    top="$4"
-                    right="$4"
-                    bg="rgba(0,0,0,0.6)"
-                    borderRadius="$md"
-                    px="$3"
-                    py="$2"
-                >
-                  <Text color="$white" fontSize="$sm">
-                    {userName}
-                  </Text>
-                </Box>
-              </Box>
-          ) : (
-              <LinearGradient
-                  colors={isDark ? ['#1a1a2e', '#16213e', '#0f3460'] : ['#667eea', '#764ba2', '#f093fb']}
-                  style={styles.fullScreenVideo}
-              >
-                <Center flex={1}>
-                  <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-                    <Avatar size="2xl" borderWidth={4} borderColor="$white">
-                      <AvatarImage source={{ uri: userAvatar }} alt={userName} />
-                    </Avatar>
-                  </Animated.View>
-                  <VStack alignItems="center" mt="$6" space="md">
-                    <Text color="$white" fontSize="$2xl" fontWeight="$bold">
-                      {userName}
-                    </Text>
-                    <Badge variant="solid" bg="rgba(255,255,255,0.2)" borderRadius="$full">
-                      <BadgeText color="$white" fontSize="$sm">
-                        {joined ? 'Waiting for response...' : 'Connecting...'}
-                      </BadgeText>
-                    </Badge>
-                    {joined && (
-                        <Text color="rgba(255,255,255,0.8)" fontSize="$sm">
-                          You are connected • Waiting for {userName}
-                        </Text>
-                    )}
-                  </VStack>
-                </Center>
-              </LinearGradient>
-          )}
-
-          {/* Local user's video */}
-          {joined && !isCameraOff && (
-              <Box
-                  position="absolute"
-                  top={100}
-                  right={20}
-                  width={100}
-                  height={140}
-                  bg="$backgroundDark900"
-                  borderRadius="$xl"
-                  overflow="hidden"
-                  borderWidth={3}
-                  borderColor="$white"
-                  shadow="$9"
-              >
-                <RtcSurfaceView
-                    canvas={{
-                      uid: 0,
-                      sourceType: VideoSourceType.VideoSourceCamera,
-                      renderMode: VideoRenderMode.RenderModeHidden,
-                    }}
-                    style={styles.localVideo}
-                />
-                <Box
-                    position="absolute"
-                    top="$2"
-                    right="$2"
-                    bg="rgba(0,0,0,0.6)"
-                    borderRadius="$full"
-                    p="$1"
-                >
-                  <Ionicons name="person" size={12} color="white" />
-                </Box>
-              </Box>
-          )}
-
-          {/* Debug info */}
-          <Box
+      <Box flex={1} position="relative" bg="$backgroundDark900">
+        {/* Remote user's video */}
+        {remoteUid ? (
+          <Box flex={1}>
+            <RtcSurfaceView
+              canvas={{
+                uid: remoteUid,
+                sourceType: VideoSourceType.VideoSourceRemote,
+                renderMode: 1, // Hidden mode
+              }}
+              style={styles.fullScreenVideo}
+            />
+            <Box
               position="absolute"
-              top={Platform.OS === 'ios' ? 60 : 40}
-              left="$4"
-              bg="rgba(0,0,0,0.7)"
+              top="$4"
+              right="$4"
+              bg="rgba(0,0,0,0.6)"
               borderRadius="$md"
-              p="$2"
-          >
-            <Text color="$white" fontSize="$xs">
-              Status: {joined ? 'Connected' : 'Connecting'}
-            </Text>
-            <Text color="$white" fontSize="$xs">
-              Local UID: {localUid}
-            </Text>
-            <Text color="$white" fontSize="$xs">
-              Remote UID: {remoteUid || 'None'}
-            </Text>
-            <Text color="$white" fontSize="$xs">
-              Channel: test-{chatId}
-            </Text>
+              px="$3"
+              py="$2"
+            >
+              <Text color="$white" fontSize="$sm">
+                {userName}
+              </Text>
+            </Box>
           </Box>
+        ) : (
+          <LinearGradient
+            colors={isDark ? ['#1a1a2e', '#16213e', '#0f3460'] : ['#667eea', '#764ba2', '#f093fb']}
+            style={styles.fullScreenVideo}
+          >
+            <Center flex={1}>
+              <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+                <Avatar size="2xl" borderWidth={4} borderColor="$white">
+                  <AvatarImage source={{ uri: userAvatar }} alt={userName} />
+                </Avatar>
+              </Animated.View>
+              <VStack alignItems="center" mt="$6" space="md">
+                <Text color="$white" fontSize="$2xl" fontWeight="$bold">
+                  {userName}
+                </Text>
+                <Badge variant="solid" bg="rgba(255,255,255,0.2)" borderRadius="$full">
+                  <BadgeText color="$white" fontSize="$sm">
+                    {joined ? 'Waiting for response...' : 'Connecting...'}
+                  </BadgeText>
+                </Badge>
+                {joined && (
+                  <Text color="rgba(255,255,255,0.8)" fontSize="$sm">
+                    You are connected • Waiting for {userName}
+                  </Text>
+                )}
+              </VStack>
+            </Center>
+          </LinearGradient>
+        )}
 
-          {/* Tap to show controls overlay */}
-          {!showControls && (
-              <Pressable
-                  position="absolute"
-                  top={0}
-                  left={0}
-                  right={0}
-                  bottom={0}
-                  onPress={showControlsTemporarily}
-              />
-          )}
+        {/* Local user's video */}
+        {joined && !isCameraOff && (
+          <Box
+            position="absolute"
+            top={100}
+            right={20}
+            width={100}
+            height={140}
+            bg="$backgroundDark900"
+            borderRadius="$xl"
+            overflow="hidden"
+            borderWidth={3}
+            borderColor="$white"
+            style={styles.localVideoContainer}
+          >
+            <RtcSurfaceView
+              canvas={{
+                uid: 0,
+                sourceType: VideoSourceType.VideoSourceCamera,
+                renderMode: 1, // Hidden mode
+              }}
+              style={styles.localVideo}
+            />
+            <Box
+              position="absolute"
+              top="$2"
+              right="$2"
+              bg="rgba(0,0,0,0.6)"
+              borderRadius="$full"
+              p="$1"
+            >
+              <Ionicons name="person" size={12} color="white" />
+            </Box>
+          </Box>
+        )}
+
+        {/* Debug info */}
+        <Box
+          position="absolute"
+          top={Platform.OS === 'ios' ? 60 : 40}
+          left="$4"
+          bg="rgba(0,0,0,0.7)"
+          borderRadius="$md"
+          p="$2"
+        >
+          <Text color="$white" fontSize="$xs">
+            Status: {joined ? 'Connected' : 'Connecting'}
+          </Text>
+          <Text color="$white" fontSize="$xs">
+            Local UID: {localUid}
+          </Text>
+          <Text color="$white" fontSize="$xs">
+            Remote UID: {remoteUid || 'None'}
+          </Text>
+          <Text color="$white" fontSize="$xs">
+            Channel: test-{chatId}
+          </Text>
         </Box>
+
+        {/* Tap to show controls overlay */}
+        {!showControls && (
+          <Pressable
+            position="absolute"
+            top={0}
+            left={0}
+            right={0}
+            bottom={0}
+            onPress={showControlsTemporarily}
+          />
+        )}
+      </Box>
     );
   };
 
   const renderAudioCall = () => {
     return (
-        <LinearGradient
-            colors={isDark ? ['#2c1810', '#3d2914', '#4a3728'] : ['#ffecd2', '#fcb69f', '#ff9a9e']}
-            style={styles.fullScreenVideo}
-        >
-          <Center flex={1}>
-            <VStack alignItems="center" space="lg">
-              <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-                <Avatar size="2xl" borderWidth={6} borderColor="$white" shadow="$9">
-                  <AvatarImage source={{ uri: userAvatar }} alt={userName} />
-                </Avatar>
-              </Animated.View>
+      <LinearGradient
+        colors={isDark ? ['#2c1810', '#3d2914', '#4a3728'] : ['#ffecd2', '#fcb69f', '#ff9a9e']}
+        style={styles.fullScreenVideo}
+      >
+        <Center flex={1}>
+          <VStack alignItems="center" space="lg">
+            <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+              <Avatar size="2xl" borderWidth={6} borderColor="$white" style={styles.audioAvatar}>
+                <AvatarImage source={{ uri: userAvatar }} alt={userName} />
+              </Avatar>
+            </Animated.View>
 
-              <VStack alignItems="center" space="md">
-                <Text color="$white" fontSize="$3xl" fontWeight="$bold">
-                  {userName}
-                </Text>
+            <VStack alignItems="center" space="md">
+              <Text color="$white" fontSize="$3xl" fontWeight="$bold">
+                {userName}
+              </Text>
 
-                <Badge
-                    variant="solid"
-                    bg="rgba(255,255,255,0.25)"
-                    borderRadius="$full"
-                    px="$4"
-                    py="$2"
-                >
-                  <BadgeText color="$white" fontSize="$md" fontWeight="$semibold">
-                    {joined
-                        ? remoteUid
-                            ? formatDuration(callDuration)
-                            : 'Waiting for response...'
-                        : 'Connecting...'}
-                  </BadgeText>
-                </Badge>
+              <Badge
+                variant="solid"
+                bg="rgba(255,255,255,0.25)"
+                borderRadius="$full"
+                px="$4"
+                py="$2"
+              >
+                <BadgeText color="$white" fontSize="$md" fontWeight="$semibold">
+                  {joined
+                    ? remoteUid
+                      ? formatDuration(callDuration)
+                      : 'Waiting for response...'
+                    : 'Connecting...'}
+                </BadgeText>
+              </Badge>
 
-                {joined && (
-                    <HStack alignItems="center" space="sm">
-                      <Box w="$2" h="$2" bg="$success500" borderRadius="$full" />
-                      <Text color="rgba(255,255,255,0.8)" fontSize="$sm">
-                        Connected to call
-                      </Text>
-                    </HStack>
-                )}
-              </VStack>
+              {joined && (
+                <HStack alignItems="center" space="sm">
+                  <Box w="$2" h="$2" bg="$success500" borderRadius="$full" />
+                  <Text color="rgba(255,255,255,0.8)" fontSize="$sm">
+                    Connected to call
+                  </Text>
+                </HStack>
+              )}
             </VStack>
-          </Center>
+          </VStack>
+        </Center>
 
-          {/* Debug info for audio call */}
-          <Box
-              position="absolute"
-              bottom={200}
-              left="$4"
-              right="$4"
-              bg="rgba(0,0,0,0.7)"
-              borderRadius="$md"
-              p="$3"
-          >
-            <Text color="$white" fontSize="$sm" textAlign="center">
-              Channel: test-{chatId} | Local UID: {localUid} | Remote: {remoteUid || 'Waiting...'}
-            </Text>
-          </Box>
-        </LinearGradient>
+        {/* Debug info for audio call */}
+        <Box
+          position="absolute"
+          bottom={200}
+          left="$4"
+          right="$4"
+          bg="rgba(0,0,0,0.7)"
+          borderRadius="$md"
+          p="$3"
+        >
+          <Text color="$white" fontSize="$sm" textAlign="center">
+            Channel: test-{chatId} | Local UID: {localUid} | Remote: {remoteUid || 'Waiting...'}
+          </Text>
+        </Box>
+      </LinearGradient>
     );
   };
 
   const ControlButton = ({
-                           icon,
-                           label,
-                           isActive,
-                           onPress,
-                           variant = 'secondary'
-                         }: {
+    icon,
+    label,
+    isActive,
+    onPress,
+    variant = 'secondary'
+  }: {
     icon: string;
     label: string;
     isActive?: boolean;
@@ -511,98 +508,98 @@ const CallScreen: React.FC<CallScreenProps> = ({
     };
 
     return (
-        <Pressable onPress={onPress} alignItems="center">
-          <Box
-              bg={getButtonColor()}
-              borderRadius="$full"
-              p="$4"
-              shadow="$6"
-              borderWidth={variant === 'secondary' ? 1 : 0}
-              borderColor="rgba(255,255,255,0.3)"
-          >
-            <Ionicons
-                name={icon as any}
-                size={24}
-                color="white"
-                style={variant === 'danger' ? { transform: [{ rotate: '135deg' }] } : undefined}
-            />
-          </Box>
-          <Text color="$white" fontSize="$xs" mt="$2" fontWeight="$medium">
-            {label}
-          </Text>
-        </Pressable>
+      <Pressable onPress={onPress} alignItems="center">
+        <Box
+          bg={getButtonColor()}
+          borderRadius="$full"
+          p="$4"
+          style={styles.controlButton}
+          borderWidth={variant === 'secondary' ? 1 : 0}
+          borderColor="rgba(255,255,255,0.3)"
+        >
+          <Ionicons
+            name={icon as any}
+            size={24}
+            color="white"
+            style={variant === 'danger' ? { transform: [{ rotate: '135deg' }] } : undefined}
+          />
+        </Box>
+        <Text color="$white" fontSize="$xs" mt="$2" fontWeight="$medium">
+          {label}
+        </Text>
+      </Pressable>
     );
   };
 
   return (
-      <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
-        <SafeAreaView style={styles.safeArea}>
-          <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+    <Animated.View style={[styles.container, { opacity: fadeAnim }]}>
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
-          {/* Main call content */}
-          {isVideoCall ? renderVideoCall() : renderAudioCall()}
+        {/* Main call content */}
+        {isVideoCall ? renderVideoCall() : renderAudioCall()}
 
-          {/* Call controls */}
-          {showControls && (
-              <Animated.View
-                  style={[
-                    styles.controlsContainer,
-                    { opacity: controlsOpacity }
-                  ]}
-              >
-                <LinearGradient
-                    colors={['transparent', 'rgba(0,0,0,0.8)', 'rgba(0,0,0,0.9)']}
-                    style={styles.controlsGradient}
-                >
-                  <Box px="$6" py="$8">
-                    <HStack justifyContent="space-around" alignItems="center">
-                      <ControlButton
-                          icon={isMuted ? 'mic-off' : 'mic'}
-                          label={isMuted ? 'Unmute' : 'Mute'}
-                          isActive={isMuted}
-                          onPress={toggleMute}
-                      />
+        {/* Call controls */}
+        {showControls && (
+          <Animated.View
+            style={[
+              styles.controlsContainer,
+              { opacity: controlsOpacity }
+            ]}
+          >
+            <LinearGradient
+              colors={['transparent', 'rgba(0,0,0,0.8)', 'rgba(0,0,0,0.9)']}
+              style={styles.controlsGradient}
+            >
+              <Box px="$6" py="$8">
+                <HStack justifyContent="space-around" alignItems="center">
+                  <ControlButton
+                    icon={isMuted ? 'mic-off' : 'mic'}
+                    label={isMuted ? 'Unmute' : 'Mute'}
+                    isActive={isMuted}
+                    onPress={toggleMute}
+                  />
 
-                      {isVideoCall && (
-                          <ControlButton
-                              icon={isCameraOff ? 'videocam-off' : 'videocam'}
-                              label={isCameraOff ? 'Camera' : 'Camera'}
-                              isActive={isCameraOff}
-                              onPress={toggleCamera}
-                          />
-                      )}
+                  {isVideoCall && (
+                    <ControlButton
+                      icon={isCameraOff ? 'videocam-off' : 'videocam'}
+                      label={isCameraOff ? 'Camera' : 'Camera'}
+                      isActive={isCameraOff}
+                      onPress={toggleCamera}
+                    />
+                  )}
 
-                      {isVideoCall && !isCameraOff && (
-                          <ControlButton
-                              icon="camera-reverse"
-                              label="Flip"
-                              onPress={switchCamera}
-                          />
-                      )}
+                  {isVideoCall && !isCameraOff && (
+                    <ControlButton
+                      icon="camera-reverse"
+                      label="Flip"
+                      onPress={switchCamera}
+                    />
+                  )}
 
-                      {!isVideoCall && (
-                          <ControlButton
-                              icon={isSpeakerOn ? 'volume-high' : 'volume-medium'}
-                              label={isSpeakerOn ? 'Speaker' : 'Speaker'}
-                              isActive={isSpeakerOn}
-                              variant={isSpeakerOn ? 'primary' : 'secondary'}
-                              onPress={toggleSpeaker}
-                          />
-                      )}
+                  {!isVideoCall && (
+                    <ControlButton
+                      icon={isSpeakerOn ? 'volume-high' : 'volume-medium'}
+                      label={isSpeakerOn ? 'Speaker' : 'Speaker'}
+                      isActive={isSpeakerOn}
+                      variant={isSpeakerOn ? 'primary' : 'secondary'}
+                      onPress={toggleSpeaker}
+                    />
+                  )}
 
-                      <ControlButton
-                          icon="call"
-                          label="End"
-                          onPress={handleEndCall}
-                          variant="danger"
-                      />
-                    </HStack>
-                  </Box>
-                </LinearGradient>
-              </Animated.View>
-          )}
-        </SafeAreaView>
-      </Animated.View>
+                  <ControlButton
+                    icon="call"
+                    label="End"
+                    onPress={handleEndCall}
+                    variant="danger"
+                  />
+                </HStack>
+              </Box>
+            </LinearGradient>
+          </Animated.View>
+        )}
+      </SafeAreaView>
+    </Animated.View>
   );
 };
 
@@ -622,6 +619,36 @@ const styles = StyleSheet.create({
   localVideo: {
     width: 100,
     height: 140,
+  },
+  localVideoContainer: {
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
+    elevation: 8,
+  },
+  audioAvatar: {
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.65,
+    elevation: 8,
+  },
+  controlButton: {
+    shadowColor: '#000',
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
   controlsContainer: {
     position: 'absolute',
