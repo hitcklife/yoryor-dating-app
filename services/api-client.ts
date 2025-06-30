@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { CONFIG } from '@/config';
+import { CONFIG, getApiEndpoint } from '@/services/config';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
 
@@ -49,7 +49,7 @@ class ApiClient {
 
                 // Add auth token if available
                 if (!this.authToken) {
-                    this.authToken = await AsyncStorage.getItem('@auth_token');
+                    this.authToken = await AsyncStorage.getItem('auth_token');
                 }
 
                 if (this.authToken) {
@@ -151,23 +151,23 @@ class ApiClient {
         this.isRefreshingToken = true;
 
         try {
-            const refreshToken = await AsyncStorage.getItem('@refresh_token');
+            const refreshToken = await AsyncStorage.getItem('refresh_token');
 
             if (!refreshToken) {
                 this.isRefreshingToken = false;
                 return false;
             }
 
-            const response = await axios.post(`${CONFIG.API_URL}/auth/refresh`, {
+            const response = await axios.post(getApiEndpoint('auth/refresh'), {
                 refresh_token: refreshToken
             });
 
             if (response.data && response.data.token) {
                 this.authToken = response.data.token;
-                await AsyncStorage.setItem('@auth_token', response.data.token);
+                await AsyncStorage.setItem('auth_token', response.data.token);
 
                 if (response.data.refresh_token) {
-                    await AsyncStorage.setItem('@refresh_token', response.data.refresh_token);
+                    await AsyncStorage.setItem('refresh_token', response.data.refresh_token);
                 }
 
                 // Process any queued requests
@@ -201,8 +201,8 @@ class ApiClient {
      * Log out user
      */
     private async logoutUser(): Promise<void> {
-        await AsyncStorage.removeItem('@auth_token');
-        await AsyncStorage.removeItem('@refresh_token');
+        await AsyncStorage.removeItem('auth_token');
+        await AsyncStorage.removeItem('refresh_token');
         this.authToken = null;
 
         // In a real app, you would also navigate to login screen
@@ -214,14 +214,14 @@ class ApiClient {
      */
     public async setAuthToken(token: string): Promise<void> {
         this.authToken = token;
-        await AsyncStorage.setItem('@auth_token', token);
+        await AsyncStorage.setItem('auth_token', token);
     }
 
     /**
      * Set refresh token manually
      */
     public async setRefreshToken(token: string): Promise<void> {
-        await AsyncStorage.setItem('@refresh_token', token);
+        await AsyncStorage.setItem('refresh_token', token);
     }
 
     /**
@@ -229,8 +229,8 @@ class ApiClient {
      */
     public async clearAuthToken(): Promise<void> {
         this.authToken = null;
-        await AsyncStorage.removeItem('@auth_token');
-        await AsyncStorage.removeItem('@refresh_token');
+        await AsyncStorage.removeItem('auth_token');
+        await AsyncStorage.removeItem('refresh_token');
     }
 
     /**
@@ -492,6 +492,129 @@ class ApiClient {
         const source = CancelToken.source();
         return source;
     }
+
+    // ===============================
+    // SPECIFIC API ENDPOINTS
+    // ===============================
+
+    /**
+     * Authentication endpoints
+     */
+    public auth = {
+        refresh: async () => {
+            const refreshToken = await AsyncStorage.getItem('refresh_token');
+            return this.post('/auth/refresh', { refresh_token: refreshToken });
+        },
+    };
+
+    /**
+     * Chat endpoints
+     */
+    public chats = {
+        getAll: async (page: number = 1, perPage: number = CONFIG.APP.defaultPageSize) => {
+            return this.get(`/api/v1/chats?page=${page}&per_page=${perPage}`);
+        },
+
+        getById: async (chatId: number, page: number = 1, perPage: number = CONFIG.APP.chatMessagesPageSize) => {
+            return this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
+        },
+
+        sendMessage: async (chatId: number, data: {
+            content: string;
+            message_type?: string;
+            media_url?: string;
+            media_data?: any;
+            reply_to_message_id?: number;
+        }) => {
+            return this.post(`/api/v1/chats/${chatId}/messages`, data);
+        },
+
+        sendVoiceMessage: async (chatId: number, formData: FormData) => {
+            return this.post(`/api/v1/chats/${chatId}/messages`, formData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+        },
+
+        loadMoreMessages: async (chatId: number, page: number, perPage: number = CONFIG.APP.chatMessagesPageSize) => {
+            return this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
+        },
+    };
+
+    /**
+     * Matches endpoints
+     */
+    public matches = {
+        getPotential: async (page: number = 1) => {
+            return this.get(`/api/v1/matches/potential?page=${page}`);
+        },
+
+        getMatches: async (page: number = 1) => {
+            return this.get(`/api/v1/matches?page=${page}`);
+        },
+    };
+
+    /**
+     * Likes endpoints
+     */
+    public likes = {
+        send: async (userId: number | string) => {
+            return this.post('/api/v1/likes', { user_id: userId });
+        },
+
+        getReceived: async (page: number = 1) => {
+            return this.get(`/api/v1/likes/received?page=${page}`);
+        },
+    };
+
+    /**
+     * Dislikes endpoints
+     */
+    public dislikes = {
+        send: async (userId: number | string) => {
+            return this.post('/api/v1/dislikes', { user_id: userId });
+        },
+    };
+
+    /**
+     * Device token endpoints
+     */
+    public deviceTokens = {
+        register: async (tokenData: {
+            token: string;
+            deviceName?: string;
+            brand?: string;
+            modelName?: string;
+            osName?: string;
+            osVersion?: string;
+            deviceType?: string;
+            isDevice?: boolean;
+            manufacturer?: string;
+        }) => {
+            return this.post('/api/v1/device-tokens', tokenData);
+        },
+    };
+
+    /**
+     * Broadcasting endpoints
+     */
+    public broadcasting = {
+        auth: async (data: { socket_id: string; channel_name: string }) => {
+            return this.post('/api/v1/broadcasting/auth', data);
+        },
+    };
+
+    /**
+     * Agora endpoints
+     */
+    public agora = {
+        getToken: async (channelName: string, userId: string, role: 'publisher' | 'subscriber' = 'publisher') => {
+            return this.post('/api/v1/agora/token', {
+                channel_name: channelName,
+                user_id: userId,
+                role: role,
+            });
+        },
+    };
 }
 
 // Export singleton instance

@@ -1,5 +1,6 @@
-import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { apiClient } from "./api-client";
+import { CONFIG, getAssetUrl } from "@/services/config";
 
 // Types for the likes API response
 export interface User {
@@ -125,13 +126,7 @@ export function getProfilePhotoUrl(user: User | null, useHighRes: boolean = fals
     : user.profile_photo.medium_url;
 
   if (photoUrl) {
-    // Check if the URL is already absolute
-    if (photoUrl.startsWith('http')) {
-      return photoUrl;
-    } else {
-      // Assuming the base URL is the same as in matches-service.ts
-      return `https://incredibly-evident-hornet.ngrok-free.app${photoUrl}`;
-    }
+    return getAssetUrl(photoUrl);
   }
 
   return null;
@@ -145,37 +140,17 @@ class LikesService {
   private matchesLastPage: number = 1;
   private isLoading: boolean = false;
 
-  // Function to set authorization header
-  private async setAuthHeader(): Promise<boolean> {
-    try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        console.error('No auth token found');
-        return false;
-      }
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      return true;
-    } catch (error) {
-      console.error('Error setting auth header:', error);
-      return false;
-    }
-  }
-
   // Function to fetch received likes
   async fetchReceivedLikes(page: number = 1): Promise<LikesResponse | null> {
     try {
       this.isLoading = true;
 
-      if (!(await this.setAuthHeader())) {
-        return null;
-      }
+      // Make the API call using centralized client
+      const response = await apiClient.likes.getReceived(page);
 
-      // Make the API call
-      const response = await axios.get(`/api/v1/likes/received?page=${page}`);
-
-      if (response.data.status === 'success') {
-        this.likesCurrentPage = response.data.data.pagination.current_page;
-        this.likesLastPage = response.data.data.pagination.last_page;
+      if (response.status === 'success' && response.data) {
+        this.likesCurrentPage = response.data.pagination.current_page;
+        this.likesLastPage = response.data.pagination.last_page;
         return response.data;
       }
 
@@ -193,16 +168,12 @@ class LikesService {
     try {
       this.isLoading = true;
 
-      if (!(await this.setAuthHeader())) {
-        return null;
-      }
+      // Make the API call using centralized client
+      const response = await apiClient.matches.getMatches(page);
 
-      // Make the API call
-      const response = await axios.get(`/api/v1/matches?page=${page}`);
-
-      if (response.data.status === 'success') {
-        this.matchesCurrentPage = response.data.data.pagination.current_page;
-        this.matchesLastPage = response.data.data.pagination.last_page;
+      if (response.status === 'success' && response.data) {
+        this.matchesCurrentPage = response.data.pagination.current_page;
+        this.matchesLastPage = response.data.pagination.last_page;
         return response.data;
       }
 
@@ -218,15 +189,13 @@ class LikesService {
   // Function to like a user
   async likeUser(userId: number): Promise<any | null> {
     try {
-      if (!(await this.setAuthHeader())) {
-        return null;
+      const response = await apiClient.likes.send(userId);
+
+      if (response.status === 'success') {
+        return response.data;
       }
 
-      const response = await axios.post('/api/v1/likes', {
-        user_id: userId
-      });
-
-      return response.data;
+      return null;
     } catch (error) {
       console.error('Error sending like:', error);
       return null;

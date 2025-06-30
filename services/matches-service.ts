@@ -1,5 +1,6 @@
-import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { apiClient } from "./api-client";
+import { CONFIG, getAssetUrl } from "@/services/config";
 
 // Types for the API response
 export type PotentialMatchPhoto = {
@@ -133,12 +134,7 @@ export const getProfilePhotoUrl = (match: PotentialMatch, useHighRes: boolean = 
       : profilePhoto.attributes.medium_url || profilePhoto.attributes.original_url;
 
     if (photoUrl) {
-      // Check if the URL is already absolute or needs the base URL
-      if (photoUrl.startsWith('http')) {
-        return photoUrl;
-      } else {
-        return `https://incredibly-evident-hornet.ngrok-free.app${photoUrl}`;
-      }
+      return getAssetUrl(photoUrl);
     }
   }
 
@@ -150,12 +146,7 @@ export const getProfilePhotoUrl = (match: PotentialMatch, useHighRes: boolean = 
       : firstPhoto.attributes.medium_url || firstPhoto.attributes.original_url;
 
     if (photoUrl) {
-      // Check if the URL is already absolute or needs the base URL
-      if (photoUrl.startsWith('http')) {
-        return photoUrl;
-      } else {
-        return `https://incredibly-evident-hornet.ngrok-free.app${photoUrl}`;
-      }
+      return getAssetUrl(photoUrl);
     }
   }
 
@@ -168,38 +159,18 @@ class MatchesService {
   private lastPage: number = 1;
   private isLoading: boolean = false;
 
-  // Function to set authorization header
-  private async setAuthHeader(): Promise<boolean> {
-    try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        console.error('No auth token found');
-        return false;
-      }
-      axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      return true;
-    } catch (error) {
-      console.error('Error setting auth header:', error);
-      return false;
-    }
-  }
-
   // Function to fetch potential matches
   async fetchPotentialMatches(page: number = 1): Promise<PotentialMatchesResponse | null> {
     try {
       this.isLoading = true;
 
-      if (!(await this.setAuthHeader())) {
-        return null;
-      }
+      // Make the API call using centralized client
+      const response = await apiClient.matches.getPotential(page);
 
-      // Make the API call
-      const response = await axios.get(`/api/v1/matches/potential?page=${page}`);
-
-      if (response.data.status === 'success') {
-        this.currentPage = response.data.meta.current_page[0];
-        this.lastPage = response.data.meta.last_page[0];
-        return response.data;
+      if (response.status === 'success' && response.data) {
+        this.currentPage = response.meta.current_page[0];
+        this.lastPage = response.meta.last_page[0];
+        return response;
       }
 
       return null;
@@ -214,15 +185,13 @@ class MatchesService {
   // Function to send a like to a user
   async likeUser(userId: string): Promise<LikeDislikeResponse | null> {
     try {
-      if (!(await this.setAuthHeader())) {
-        return null;
+      const response = await apiClient.likes.send(userId);
+
+      if (response.status === 'success') {
+        return response.data;
       }
 
-      const response = await axios.post('/api/v1/likes', {
-        user_id: userId
-      });
-
-      return response.data;
+      return null;
     } catch (error) {
       console.error('Error sending like:', error);
       return null;
@@ -232,15 +201,13 @@ class MatchesService {
   // Function to send a dislike to a user
   async dislikeUser(userId: string): Promise<LikeDislikeResponse | null> {
     try {
-      if (!(await this.setAuthHeader())) {
-        return null;
+      const response = await apiClient.dislikes.send(userId);
+
+      if (response.status === 'success') {
+        return response.data;
       }
 
-      const response = await axios.post('/api/v1/dislikes', {
-        user_id: userId
-      });
-
-      return response.data;
+      return null;
     } catch (error) {
       console.error('Error sending dislike:', error);
       return null;

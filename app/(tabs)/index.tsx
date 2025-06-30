@@ -1,4 +1,3 @@
-
 import { StyleSheet, Dimensions, ScrollView, Animated } from 'react-native';
 import { Box } from '@gluestack-ui/themed';
 import { StyledProvider } from '@gluestack-style/react';
