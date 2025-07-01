@@ -510,83 +510,45 @@ class ChatsService {
         throw new Error('Current user ID not found');
       }
 
-      // First check if we have older messages in SQLite
-      const hasLocalMessages = await sqliteService.hasMessagesBeforeId(chatId, oldestMessageId);
-
-      if (hasLocalMessages) {
-        console.log('Loading older messages from SQLite...');
-        const localMessages = await sqliteService.getMessagesBeforeId(chatId, oldestMessageId, 20);
-
-        if (localMessages.length > 0) {
-          return {
-            status: 'success',
-            data: {
-              chat: null,
-              messages: localMessages,
-              pagination: {
-                total: localMessages.length,
-                loaded: localMessages.length,
-                has_more: localMessages.length === 20, // Assume more if we got full batch
-                oldest_message_id: localMessages[0]?.id || oldestMessageId
-              }
-            }
-          };
-        }
-      }
-
-      // If no local messages or need to fetch from server
       const isConnected = await NetInfo.fetch().then(state => state.isConnected);
 
       if (!isConnected) {
-        // No internet and no local messages
+        // Load from SQLite when offline
+        const offlineMessages = await sqliteService.getMessagesBeforeId(chatId, oldestMessageId, CONFIG.APP.chatMessagesPageSize);
+        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
+
         return {
           status: 'success',
           data: {
             chat: null,
-            messages: [],
+            messages: messagesWithOwnership,
             pagination: {
-              total: 0,
-              loaded: 0,
-              has_more: false,
-              oldest_message_id: oldestMessageId
+              total: messagesWithOwnership.length,
+              loaded: messagesWithOwnership.length,
+              has_more: messagesWithOwnership.length === CONFIG.APP.chatMessagesPageSize,
+              oldest_message_id: messagesWithOwnership[messagesWithOwnership.length - 1]?.id || oldestMessageId
             }
           }
         };
       }
 
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
-      console.log('Fetching older messages from server...');
-      const response = await apiClient.get(`/api/v1/chats/${chatId}`, {
+      // Online: fetch from API
+      const response = await apiClient.get(`/api/v1/chats/${chatId}/messages/before/${oldestMessageId}`, {
         params: {
-          before_message_id: oldestMessageId,
-          per_page: 20
-        },
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
+          per_page: CONFIG.APP.chatMessagesPageSize
         }
       });
 
-      if (response.status === 'success' && response.data && response.data.data && response.data.data.messages) {
-        const messages = response.data.data.messages;
+      if (response.data.status === 'success') {
+        const messagesWithOwnership = addMessageOwnership(response.data.data.messages, currentUserId);
 
-        // Add ownership to messages
-        const messagesWithOwnership = addMessageOwnership(messages, currentUserId);
-
-        // Store only new messages in SQLite (avoid duplicates)
+        // Store messages in SQLite for offline access
         for (const message of messagesWithOwnership) {
-          const exists = await sqliteService.messageExists(message.id);
-          if (!exists) {
-            await sqliteService.storeMessage(message);
-          }
+          await sqliteService.storeMessage(message);
         }
 
         return {
-          status: 'success',
+          status: response.data.status,
           data: {
             chat: response.data.data.chat,
             messages: messagesWithOwnership,
@@ -596,21 +558,208 @@ class ChatsService {
       }
 
       return {
-        status: 'success',
-        data: {
-          chat: null,
-          messages: [],
-          pagination: {
-            total: 0,
-            loaded: 0,
-            has_more: false,
-            oldest_message_id: oldestMessageId
-          }
-        }
+        status: 'error',
+        data: { chat: null, messages: [], pagination: null }
       };
-
     } catch (error) {
       console.error('Error loading more messages:', error);
+
+      // Fallback to SQLite
+      const currentUserId = await this.getCurrentUser();
+      if (currentUserId) {
+        const offlineMessages = await sqliteService.getMessagesBeforeId(chatId, oldestMessageId, CONFIG.APP.chatMessagesPageSize);
+        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
+
+        return {
+          status: 'success',
+          data: {
+            chat: null,
+            messages: messagesWithOwnership,
+            pagination: {
+              total: messagesWithOwnership.length,
+              loaded: messagesWithOwnership.length,
+              has_more: messagesWithOwnership.length === CONFIG.APP.chatMessagesPageSize,
+              oldest_message_id: messagesWithOwnership[messagesWithOwnership.length - 1]?.id || oldestMessageId
+            }
+          }
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Edit a text message
+   * @param chatId The chat ID
+   * @param messageId The message ID to edit
+   * @param newContent The new content for the message
+   * @returns Promise with the updated message
+   */
+  async editMessage(chatId: number, messageId: number, newContent: string): Promise<{
+    status: string;
+    message: string;
+    data: { message: Message };
+  } | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const currentUserId = await this.getCurrentUser();
+      if (!currentUserId) {
+        throw new Error('Current user ID not found');
+      }
+
+      const response = await apiClient.put(`/api/v1/chats/${chatId}/messages/${messageId}`, {
+        content: newContent
+      });
+
+      if (response.status === 'success' && response.data) {
+        const message = response.data.message;
+
+        // Add ownership to the edited message
+        const messageWithOwnership = {
+          ...message,
+          is_mine: message.sender_id === currentUserId
+        };
+
+        // Update message in SQLite
+        await sqliteService.storeMessage(messageWithOwnership);
+
+        return {
+          status: response.status,
+          message: response.message || 'Message edited successfully',
+          data: {
+            message: messageWithOwnership
+          }
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error editing message:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a message
+   * @param chatId The chat ID
+   * @param messageId The message ID to delete
+   * @returns Promise with success status
+   */
+  async deleteMessage(chatId: number, messageId: number): Promise<{
+    status: string;
+    message: string;
+  } | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const response = await apiClient.delete(`/api/v1/chats/${chatId}/messages/${messageId}`);
+
+      if (response.status === 'success') {
+        // Mark message as deleted in SQLite (soft delete)
+        await sqliteService.updateMessageStatus(messageId, 'deleted');
+
+        return {
+          status: response.status,
+          message: response.message || 'Message deleted successfully'
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reply to a message
+   * @param chatId The chat ID
+   * @param content The reply content
+   * @param replyToMessageId The ID of the message being replied to
+   * @param messageType The type of message (default: 'text')
+   * @returns Promise with the sent reply message
+   */
+  async replyToMessage(
+    chatId: number, 
+    content: string, 
+    replyToMessageId: number,
+    messageType: string = 'text'
+  ): Promise<SendMessageResponse | null> {
+    return this.sendMessage(chatId, content, messageType, undefined, undefined, replyToMessageId);
+  }
+
+  /**
+   * Mark messages as read in a specific chat
+   * @param chatId The chat ID
+   * @returns Promise with success status
+   */
+  async markMessagesAsRead(chatId: number): Promise<{
+    status: string;
+    message: string;
+    data: { count: number };
+  } | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const response = await apiClient.post(`/api/v1/chats/${chatId}/read`);
+
+      if (response.status === 'success') {
+        return {
+          status: response.status,
+          message: response.message || 'Messages marked as read',
+          data: {
+            count: response.data?.count || 0
+          }
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error marking messages as read:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get unread messages count across all chats
+   * @returns Promise with unread count data
+   */
+  async getUnreadCount(): Promise<{
+    status: string;
+    data: {
+      total_unread: number;
+      chats: Array<{ chat_id: number; unread_count: number }>;
+    };
+  } | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const response = await apiClient.get('/api/v1/chats/unread-count');
+
+      if (response.status === 'success') {
+        return {
+          status: response.status,
+          data: response.data
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error getting unread count:', error);
       throw error;
     }
   }

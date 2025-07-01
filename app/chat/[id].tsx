@@ -77,6 +77,11 @@ export default function ChatScreen() {
   const [callVisible, setCallVisible] = useState(false);
   const [isVideoCall, setIsVideoCall] = useState(false);
 
+  // Message interaction states
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [replyingToMessage, setReplyingToMessage] = useState<Message | null>(null);
+  const [editText, setEditText] = useState("");
+
   // Voice recording state using expo-audio hook
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [recordingState, setRecordingState] = useState({
@@ -139,8 +144,10 @@ export default function ChatScreen() {
       if (response?.data && isMounted.current) {
         setChat(response.data.chat);
 
-        // Sort messages by ascending time (oldest first)
-        const latestMessages = response.data.messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+        // Sort messages by descending time (newest first) for inverted list
+        const latestMessages = response.data.messages.sort((a, b) => 
+          new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+        );
         setMessages(latestMessages);
 
         // Set pagination info - with inverted list, oldest message is the last one in the array
@@ -149,9 +156,6 @@ export default function ChatScreen() {
           response.data.pagination?.oldest_message_id ||
           (latestMessages.length > 0 ? latestMessages[latestMessages.length - 1]?.id : null)
         );
-
-        // No need to manually scroll to bottom with inverted list
-        // The newest messages will automatically be visible at the bottom
       }
     } catch (error) {
       console.error('Error loading chat details:', error);
@@ -184,8 +188,8 @@ export default function ChatScreen() {
       if (response?.data?.messages?.length > 0 && isMounted.current) {
         const newMessages = response.data.messages;
 
-        // Prepend older messages at the start
-        setMessages(prevMessages => [...newMessages, ...prevMessages]);
+        // Append older messages at the end (for inverted list)
+        setMessages(prevMessages => [...prevMessages, ...newMessages]);
 
         // Update pagination info
         setHasMoreMessages(response.data.pagination?.has_more || false);
@@ -220,7 +224,7 @@ export default function ChatScreen() {
     initializeWebSocket();
   }, []);
 
-  // Subscribe to chat channel
+  // Subscribe to chat channel with enhanced event handling
   useEffect(() => {
     if (!chatId) return;
     let channel: any = null;
@@ -228,6 +232,7 @@ export default function ChatScreen() {
       try {
         await webSocketService.initialize();
         if (!isMounted.current) return;
+        
         channel = webSocketService.subscribeToChat(
           chatId,
           // onMessage
@@ -237,6 +242,7 @@ export default function ChatScreen() {
               setMessages(prevMessages => {
                 const messageExists = prevMessages.some(msg => msg.id === newMessage.id);
                 if (messageExists) return prevMessages;
+                // Add new message at the beginning (newest first for inverted list)
                 return [newMessage, ...prevMessages];
               });
             }
@@ -255,6 +261,28 @@ export default function ChatScreen() {
                   setTypingUser(null);
                 }
               }, 3000);
+            }
+          },
+          // Additional callbacks for edit/delete events
+          {
+            onMessageEdited: (editedMessage: Message) => {
+              if (!isMounted.current) return;
+              setMessages(prevMessages =>
+                prevMessages.map(msg =>
+                  msg.id === editedMessage.id ? { ...msg, ...editedMessage } : msg
+                )
+              );
+            },
+            onMessageDeleted: (messageId: number) => {
+              if (!isMounted.current) return;
+              setMessages(prevMessages =>
+                prevMessages.filter(msg => msg.id !== messageId)
+              );
+            },
+            onMessageRead: (messageId: number, userId: number) => {
+              if (!isMounted.current) return;
+              // Update message read status if needed
+              console.log(`Message ${messageId} read by user ${userId}`);
             }
           }
         );
@@ -294,9 +322,87 @@ export default function ChatScreen() {
     };
   }, [fetchChatData, chatId]);
 
-  // No need to scroll to bottom on initial load with inverted list
-  // The newest messages will automatically be visible at the bottom
-  // This effect has been removed as it's not needed with inverted list
+  // ---- Message Action Handlers ----
+
+  // Handle edit message
+  const handleEditMessage = useCallback((messageToEdit: Message) => {
+    if (!messageToEdit.is_mine || messageToEdit.message_type !== 'text') return;
+    setEditingMessage(messageToEdit);
+    setEditText(messageToEdit.content);
+  }, []);
+
+  // Handle delete message
+  const handleDeleteMessage = useCallback(async (messageId: number) => {
+    try {
+      if (!chatId) {
+        Alert.alert("Error", "Cannot delete message: Invalid chat ID");
+        return;
+      }
+
+      const response = await chatsService.deleteMessage(chatId, messageId);
+      
+      if (response?.status === 'success') {
+        // Optimistically remove message from UI
+        setMessages(prevMessages =>
+          prevMessages.filter(msg => msg.id !== messageId)
+        );
+      } else {
+        Alert.alert("Error", "Failed to delete message. Please try again.");
+      }
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      Alert.alert("Error", "An error occurred while deleting the message.");
+    }
+  }, [chatId]);
+
+  // Handle reply to message
+  const handleReplyToMessage = useCallback((messageToReply: Message) => {
+    setReplyingToMessage(messageToReply);
+  }, []);
+
+  // Send edited message
+  const sendEditedMessage = useCallback(async () => {
+    if (!editingMessage || !editText.trim() || !chatId) return;
+
+    try {
+      const response = await chatsService.editMessage(chatId, editingMessage.id, editText.trim());
+      
+      if (response?.status === 'success') {
+        // Update message in UI
+        setMessages(prevMessages =>
+          prevMessages.map(msg =>
+            msg.id === editingMessage.id ? { ...msg, ...response.data.message } : msg
+          )
+        );
+        
+        // Clear edit state
+        setEditingMessage(null);
+        setEditText("");
+      } else {
+        Alert.alert("Error", "Failed to edit message. Please try again.");
+      }
+    } catch (error) {
+      console.error('Error editing message:', error);
+      Alert.alert("Error", "An error occurred while editing the message.");
+    }
+  }, [editingMessage, editText, chatId]);
+
+  // Cancel edit
+  const cancelEdit = useCallback(() => {
+    setEditingMessage(null);
+    setEditText("");
+  }, []);
+
+  // Clear reply
+  const clearReply = useCallback(() => {
+    setReplyingToMessage(null);
+  }, []);
+
+  // Get replied message for display
+  const getReplyMessage = useCallback((replyToMessageId: number | null): Message | null => {
+    if (!replyToMessageId) return null;
+    return messages.find(msg => msg.id === replyToMessageId) || null;
+  }, [messages]);
 
   // ---- Audio recording management ----
 
@@ -597,6 +703,12 @@ export default function ChatScreen() {
 
   // Send text message
   const handleSend = useCallback(async () => {
+    // Handle editing existing message
+    if (editingMessage) {
+      await sendEditedMessage();
+      return;
+    }
+
     if (message.trim() === "") return;
 
     // Check if chatId is valid
@@ -607,6 +719,7 @@ export default function ChatScreen() {
 
     // Store message for potential restore
     const messageToSend = message.trim();
+    const replyToId = replyingToMessage?.id;
 
     try {
       // Show sending state
@@ -614,6 +727,11 @@ export default function ChatScreen() {
 
       // Clear the input field immediately for better UX
       setMessage("");
+      
+      // Clear reply state
+      if (replyingToMessage) {
+        setReplyingToMessage(null);
+      }
 
       // Send the message using the chat service
       const response = await chatsService.sendMessage(
@@ -622,15 +740,12 @@ export default function ChatScreen() {
           "text", // message_type
           undefined, // media_url
           undefined, // media_data
-          undefined  // reply_to_message_id
+          replyToId  // reply_to_message_id
       );
 
       if (response) {
-        // Append new messages at the end
-        setMessages(prevMessages => [...prevMessages, response.data.message]);
-
-        // No need to manually scroll with inverted list
-        // New messages appear at the top automatically
+        // Add new message at the beginning (newest first for inverted list)
+        setMessages(prevMessages => [response.data.message, ...prevMessages]);
       } else {
         // This should not happen as chatsService.sendMessage always returns a response
         // But just in case, show an error message
@@ -642,12 +757,20 @@ export default function ChatScreen() {
 
         // Restore message to input field
         setMessage(messageToSend);
+        // Restore reply state
+        if (replyToId) {
+          setReplyingToMessage(messages.find(msg => msg.id === replyToId) || null);
+        }
       }
     } catch (err) {
       console.error('Error sending message:', err);
 
       // Restore message to input field
       setMessage(messageToSend);
+      // Restore reply state
+      if (replyToId) {
+        setReplyingToMessage(messages.find(msg => msg.id === replyToId) || null);
+      }
 
       // Show an error message
       Alert.alert(
@@ -658,7 +781,7 @@ export default function ChatScreen() {
     } finally {
       setIsSending(false);
     }
-  }, [message, chatId]);
+  }, [message, chatId, editingMessage, replyingToMessage, sendEditedMessage, messages]);
 
   // ---- Voice message functions ----
 
@@ -997,19 +1120,24 @@ export default function ChatScreen() {
 
   // Handle message input change
   const handleMessageChange = useCallback((text: string) => {
-    setMessage(text);
+    if (editingMessage) {
+      setEditText(text);
+    } else {
+      setMessage(text);
+    }
 
     // Send typing indicator if message has content
     if (text.trim().length > 0) {
       debouncedSendTypingIndicator();
     }
-  }, [debouncedSendTypingIndicator]);
+  }, [debouncedSendTypingIndicator, editingMessage]);
 
   // ---- Rendering functions ----
 
   // Render message item using our MessageItem component
   const renderMessage = useCallback(({ item }: { item: Message }) => {
     const isCurrentlyPlaying = audioPlayback.isPlaying && audioPlayback.currentMessageId === item.id;
+    const replyToMessage = getReplyMessage(item.reply_to_message_id);
 
     return (
       <MessageItem
@@ -1019,9 +1147,23 @@ export default function ChatScreen() {
         isCurrentlyPlaying={isCurrentlyPlaying}
         onPlayVoiceMessage={playVoiceMessage}
         onRetry={handleRetry}
+        onEdit={handleEditMessage}
+        onDelete={handleDeleteMessage}
+        onReply={handleReplyToMessage}
+        replyToMessage={replyToMessage}
       />
     );
-  }, [audioPlayback, formatDuration, formatMessageTime, handleRetry, playVoiceMessage]);
+  }, [
+    audioPlayback, 
+    formatDuration, 
+    formatMessageTime, 
+    handleRetry, 
+    playVoiceMessage,
+    handleEditMessage,
+    handleDeleteMessage,
+    handleReplyToMessage,
+    getReplyMessage
+  ]);
 
   // ---- Render UI states ----
 
@@ -1185,8 +1327,9 @@ export default function ChatScreen() {
                   renderItem={renderMessage}
                   keyExtractor={(item) => item.id.toString()}
                   contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8 }}
-                  onStartReached={loadMoreMessages}
-                  onStartReachedThreshold={0.1}
+                  inverted={true}
+                  onEndReached={loadMoreMessages}
+                  onEndReachedThreshold={0.1}
                   initialNumToRender={15}
                   maxToRenderPerBatch={10}
                   windowSize={21}
@@ -1202,7 +1345,7 @@ export default function ChatScreen() {
                     const offset = event.nativeEvent.contentOffset.y;
                     const contentHeight = event.nativeEvent.contentSize.height;
                     const layoutHeight = event.nativeEvent.layoutMeasurement.height;
-                    const isAtBottom = offset + layoutHeight >= contentHeight - 20;
+                    const isAtBottom = offset <= 20; // For inverted list, bottom is when offset is near 0
                     setScrollState({
                       offset,
                       contentHeight,
@@ -1236,10 +1379,48 @@ export default function ChatScreen() {
                   />
               )}
 
+              {/* Reply Preview */}
+              {replyingToMessage && (
+                <Box bg="#F3F4F6" p="$3" mx="$4" borderRadius="$md" borderLeftWidth={3} borderLeftColor="#8B5CF6">
+                  <HStack justifyContent="space-between" alignItems="flex-start">
+                    <VStack flex={1}>
+                      <Text color="#6B7280" fontSize="$xs" fontWeight="$medium" mb="$1">
+                        Replying to {replyingToMessage.is_mine ? "yourself" : (chat?.other_user?.profile?.first_name || "User")}
+                      </Text>
+                      <Text color="#1F2937" fontSize="$sm" numberOfLines={2}>
+                        {replyingToMessage.content}
+                      </Text>
+                    </VStack>
+                    <Pressable onPress={clearReply} ml="$2">
+                      <Ionicons name="close" size={20} color="#6B7280" />
+                    </Pressable>
+                  </HStack>
+                </Box>
+              )}
+
+              {/* Edit Preview */}
+              {editingMessage && (
+                <Box bg="#FEF3C7" p="$3" mx="$4" borderRadius="$md" borderLeftWidth={3} borderLeftColor="#F59E0B">
+                  <HStack justifyContent="space-between" alignItems="flex-start">
+                    <VStack flex={1}>
+                      <Text color="#92400E" fontSize="$xs" fontWeight="$medium" mb="$1">
+                        Editing message
+                      </Text>
+                      <Text color="#1F2937" fontSize="$sm" numberOfLines={2}>
+                        {editingMessage.content}
+                      </Text>
+                    </VStack>
+                    <Pressable onPress={cancelEdit} ml="$2">
+                      <Ionicons name="close" size={20} color="#92400E" />
+                    </Pressable>
+                  </HStack>
+                </Box>
+              )}
+
               {/* Voice Message Preview */}
               {recordingState.showVoiceMessage && recordingState.recordedAudio && (
                   <MessageInput
-                    message={message}
+                    message={editingMessage ? editText : message}
                     isSending={isSending}
                     recordingState={recordingState}
                     isPlaying={audioPlayback.isPlaying}
@@ -1260,7 +1441,7 @@ export default function ChatScreen() {
               {/* Message Input */}
               {!recordingState.showVoiceMessage && (
                   <MessageInput
-                    message={message}
+                    message={editingMessage ? editText : message}
                     isSending={isSending || isAttachingFile}
                     recordingState={recordingState}
                     isPlaying={audioPlayback.isPlaying}

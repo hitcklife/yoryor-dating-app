@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Pressable, Modal, Dimensions } from "react-native";
+import { Pressable, Modal, Dimensions, Alert } from "react-native";
 import { Box, Text, HStack, VStack, Image } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
 import { Message } from "@/services/chats-service";
@@ -11,6 +11,10 @@ interface MessageItemProps {
   isCurrentlyPlaying?: boolean;
   onPlayVoiceMessage?: (mediaUrl: string, messageId: number) => void;
   onRetry?: (message: Message) => void;
+  onEdit?: (message: Message) => void;
+  onDelete?: (messageId: number) => void;
+  onReply?: (message: Message) => void;
+  replyToMessage?: Message | null; // For displaying replied message context
 }
 
 const MessageItem: React.FC<MessageItemProps> = ({
@@ -20,13 +24,21 @@ const MessageItem: React.FC<MessageItemProps> = ({
   isCurrentlyPlaying = false,
   onPlayVoiceMessage = () => {},
   onRetry = () => {},
+  onEdit = () => {},
+  onDelete = () => {},
+  onReply = () => {},
+  replyToMessage = null,
 }) => {
   const isMe = message.is_mine;
   const isVoiceMessage = message.message_type === 'voice';
   const isImageMessage = message.message_type === 'image';
   const isVideoMessage = message.message_type === 'video';
+  const canEdit = isMe && message.message_type === 'text' && !message.deleted_at;
+  const canDelete = isMe && !message.deleted_at;
   
   const [showFullImage, setShowFullImage] = useState(false);
+  const [showContextMenu, setShowContextMenu] = useState(false);
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
 
   // Determine background color based on message status
   let bgColor = isMe ? "#8B5CF6" : "#F9FAFB";
@@ -38,6 +50,78 @@ const MessageItem: React.FC<MessageItemProps> = ({
       bgColor = "#EF4444"; // Red color for failed
     }
   }
+
+  const handleLongPress = (event: any) => {
+    if (!isMe && !onReply) return; // Only show menu if user can perform actions
+    
+    const { pageX, pageY } = event.nativeEvent;
+    setMenuPosition({ x: pageX, y: pageY });
+    setShowContextMenu(true);
+  };
+
+  const handleEdit = () => {
+    setShowContextMenu(false);
+    if (canEdit && onEdit) {
+      onEdit(message);
+    }
+  };
+
+  const handleDelete = () => {
+    setShowContextMenu(false);
+    if (canDelete && onDelete) {
+      Alert.alert(
+        "Delete Message",
+        "Are you sure you want to delete this message?",
+        [
+          { text: "Cancel", style: "cancel" },
+          { 
+            text: "Delete", 
+            style: "destructive",
+            onPress: () => onDelete(message.id)
+          }
+        ]
+      );
+    }
+  };
+
+  const handleReply = () => {
+    setShowContextMenu(false);
+    if (onReply) {
+      onReply(message);
+    }
+  };
+
+  const renderReplyMessage = () => {
+    if (!message.reply_to_message_id || !replyToMessage) return null;
+
+    return (
+      <Box
+        bg={isMe ? "rgba(255,255,255,0.2)" : "#E5E7EB"}
+        borderRadius="$sm"
+        p="$2"
+        mb="$2"
+        borderLeftWidth={3}
+        borderLeftColor={isMe ? "#FFFFFF" : "#8B5CF6"}
+      >
+        <Text
+          color={isMe ? "#EDE9FE" : "#6B7280"}
+          fontSize="$xs"
+          fontWeight="$medium"
+          mb="$1"
+        >
+          {replyToMessage.is_mine ? "You" : ""}
+        </Text>
+        <Text
+          color={isMe ? "#FFFFFF" : "#1F2937"}
+          fontSize="$sm"
+          numberOfLines={2}
+          ellipsizeMode="tail"
+        >
+          {replyToMessage.content}
+        </Text>
+      </Box>
+    );
+  };
 
   const renderMessageContent = () => {
     if (isVoiceMessage) {
@@ -137,43 +221,114 @@ const MessageItem: React.FC<MessageItemProps> = ({
 
   return (
     <>
-      <Box
-        maxWidth="80%"
-        bg={bgColor}
-        borderRadius="$2xl"
-        p="$3"
-        mb="$2"
-        alignSelf={isMe ? "flex-end" : "flex-start"}
-        borderTopRightRadius={isMe ? "$none" : "$2xl"}
-        borderTopLeftRadius={isMe ? "$2xl" : "$none"}
+      <Pressable onLongPress={handleLongPress}>
+        <Box
+          maxWidth="80%"
+          bg={bgColor}
+          borderRadius="$2xl"
+          p="$3"
+          mb="$2"
+          alignSelf={isMe ? "flex-end" : "flex-start"}
+          borderTopRightRadius={isMe ? "$none" : "$2xl"}
+          borderTopLeftRadius={isMe ? "$2xl" : "$none"}
+        >
+          {renderReplyMessage()}
+          {renderMessageContent()}
+          
+          <HStack justifyContent="space-between" alignItems="center" mt="$1">
+            <HStack alignItems="center">
+              {message.is_edited && (
+                <Text
+                  color={isMe ? "#EDE9FE" : "#6B7280"}
+                  fontSize="$xs"
+                  mr="$1"
+                >
+                  edited
+                </Text>
+              )}
+            </HStack>
+            
+            <HStack alignItems="center">
+              {isMe && (
+                <>
+                  {(message.status === "sending" || message.status === "pending") && (
+                    <Ionicons name="time-outline" size={12} color="#E0E0E0" style={{ marginRight: 4 }} />
+                  )}
+                  {message.status === "sent" && (
+                    <Ionicons name="checkmark" size={12} color="#E0E0E0" style={{ marginRight: 4 }} />
+                  )}
+                  {message.status === "failed" && (
+                    <Pressable onPress={() => onRetry(message)}>
+                      <Ionicons name="alert-circle" size={12} color="#FF4D4D" style={{ marginRight: 4 }} />
+                    </Pressable>
+                  )}
+                </>
+              )}
+              <Text
+                color={isMe ? "#EDE9FE" : "#6B7280"}
+                fontSize="$xs"
+                textAlign="right"
+              >
+                {formatMessageTime(message.sent_at || message.created_at)}
+              </Text>
+            </HStack>
+          </HStack>
+        </Box>
+      </Pressable>
+
+      {/* Context Menu Modal */}
+      <Modal
+        visible={showContextMenu}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowContextMenu(false)}
       >
-        {renderMessageContent()}
-        
-        <HStack justifyContent="flex-end" alignItems="center" mt="$1">
-          {isMe && (
-            <>
-              {(message.status === "sending" || message.status === "pending") && (
-                <Ionicons name="time-outline" size={12} color="#E0E0E0" style={{ marginRight: 4 }} />
-              )}
-              {message.status === "sent" && (
-                <Ionicons name="checkmark" size={12} color="#E0E0E0" style={{ marginRight: 4 }} />
-              )}
-              {message.status === "failed" && (
-                <Pressable onPress={() => onRetry(message)}>
-                  <Ionicons name="alert-circle" size={12} color="#FF4D4D" style={{ marginRight: 4 }} />
-                </Pressable>
-              )}
-            </>
-          )}
-          <Text
-            color={isMe ? "#EDE9FE" : "#6B7280"}
-            fontSize="$xs"
-            textAlign="right"
+        <Pressable
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.3)' }}
+          onPress={() => setShowContextMenu(false)}
+        >
+          <Box
+            position="absolute"
+            top={Math.min(menuPosition.y - 50, Dimensions.get('window').height - 200)}
+            left={Math.min(menuPosition.x - 50, Dimensions.get('window').width - 150)}
+            bg="#FFFFFF"
+            borderRadius="$lg"
+            shadowColor="#000000"
+            shadowOffset={{ width: 0, height: 2 }}
+            shadowOpacity={0.25}
+            shadowRadius={4}
+            elevation={5}
+            minWidth={120}
           >
-            {formatMessageTime(message.sent_at || message.created_at)}
-          </Text>
-        </HStack>
-      </Box>
+            {onReply && (
+              <Pressable onPress={handleReply}>
+                <HStack alignItems="center" space="sm" p="$3">
+                  <Ionicons name="arrow-undo" size={16} color="#6B7280" />
+                  <Text color="#1F2937" fontSize="$sm">Reply</Text>
+                </HStack>
+              </Pressable>
+            )}
+            
+            {canEdit && (
+              <Pressable onPress={handleEdit}>
+                <HStack alignItems="center" space="sm" p="$3">
+                  <Ionicons name="pencil" size={16} color="#6B7280" />
+                  <Text color="#1F2937" fontSize="$sm">Edit</Text>
+                </HStack>
+              </Pressable>
+            )}
+            
+            {canDelete && (
+              <Pressable onPress={handleDelete}>
+                <HStack alignItems="center" space="sm" p="$3">
+                  <Ionicons name="trash" size={16} color="#EF4444" />
+                  <Text color="#EF4444" fontSize="$sm">Delete</Text>
+                </HStack>
+              </Pressable>
+            )}
+          </Box>
+        </Pressable>
+      </Modal>
 
       {/* Full Screen Image Modal */}
       <Modal
