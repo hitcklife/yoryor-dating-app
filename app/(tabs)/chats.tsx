@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from "react";
-import { FlatList, Image, TouchableOpacity, ActivityIndicator } from "react-native";
-import { useRouter } from "expo-router";
+import React, { useState, useEffect, useRef } from "react";
+import { FlatList, Image, TouchableOpacity, ActivityIndicator, RefreshControl } from "react-native";
+import { useRouter, useFocusEffect } from "expo-router";
 import {
   Box,
   Text,
@@ -14,7 +14,8 @@ import {
   Center,
 } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
-import { chatsService, Chat, getProfilePhotoUrl } from "@/services/chats-service";
+import { chatsService, Chat, getProfilePhotoUrl, getMessageReadStatus, initializeChatsService } from "@/services/chats-service";
+import { webSocketService } from "@/services/websocket-service";
 import { format, isToday, isYesterday } from "date-fns";
 
 // Sample active users data for now (will be replaced with real data later)
@@ -87,6 +88,26 @@ const ChatItem = ({ chat, onPress }: ChatItemProps) => {
     chat.last_message.content :
     "No messages yet";
 
+  // Check if last message is from current user and get read status
+  const isLastMessageFromMe = chat.last_message?.is_mine;
+  const readStatus = isLastMessageFromMe && chat.last_message ? 
+    getMessageReadStatus(chat.last_message, chat.pivot.user_id, chat.other_user.id) : 
+    null;
+
+  // Read status icon component for chat list
+  const ReadStatusIcon = ({ status }: { status: 'sent' | 'delivered' | 'read' }) => {
+    switch (status) {
+      case 'sent':
+        return <Ionicons name="checkmark" size={12} color="#9CA3AF" />;
+      case 'delivered':
+        return <Ionicons name="checkmark-done" size={12} color="#9CA3AF" />;
+      case 'read':
+        return <Ionicons name="checkmark-done" size={12} color="#8B5CF6" />;
+      default:
+        return null;
+    }
+  };
+
   return (
     <Pressable
       onPress={() => onPress(chat.id)}
@@ -135,12 +156,15 @@ const ChatItem = ({ chat, onPress }: ChatItemProps) => {
               >
                 {userName}
               </Text>
-              <Text
-                color="#6B7280"
-                size="sm"
-              >
-                {lastMessageTime}
-              </Text>
+              <HStack space="xs" alignItems="center">
+                {readStatus && <ReadStatusIcon status={readStatus} />}
+                <Text
+                  color="#6B7280"
+                  size="sm"
+                >
+                  {lastMessageTime}
+                </Text>
+              </HStack>
             </HStack>
 
             <Text
@@ -178,6 +202,7 @@ export default function ChatsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const isMounted = useRef(true);
 
   const fetchChats = async (showRefreshing = false) => {
     try {
@@ -190,32 +215,158 @@ export default function ChatsScreen() {
 
       const response = await chatsService.getChats();
 
-      if (response && response.status === 'success') {
+      if (response && response.status === 'success' && isMounted.current) {
         setChats(response.data.chats);
-      } else {
+      } else if (isMounted.current) {
         setError('Failed to fetch chats');
       }
     } catch (err) {
       console.error('Error fetching chats:', err);
-      setError('An error occurred while fetching chats');
+      if (isMounted.current) {
+        setError('An error occurred while fetching chats');
+      }
     } finally {
-      setLoading(false);
-      if (showRefreshing) {
-        setRefreshing(false);
+      if (isMounted.current) {
+        setLoading(false);
+        if (showRefreshing) {
+          setRefreshing(false);
+        }
       }
     }
   };
 
+  // Initialize WebSocket for real-time updates
   useEffect(() => {
-    fetchChats();
+    const initializeWebSocket = async () => {
+      try {
+        await webSocketService.initialize();
+        
+        // Subscribe to chat list updates
+        webSocketService.subscribeToChatList({
+          onNewMessage: async (chatId: number, message: any) => {
+            if (!isMounted.current) return;
+            
+            console.log(`New message in chat ${chatId}:`, message);
+            
+            // Update the specific chat with new message
+            await chatsService.updateChatWithNewMessage(chatId, message);
+            
+            // Refresh the chat list to show updated data
+            setChats(prevChats => {
+              return prevChats.map(chat => {
+                if (chat.id === chatId) {
+                  return {
+                    ...chat,
+                    last_message: message,
+                    last_activity_at: message.sent_at || message.created_at,
+                    unread_count: chat.unread_count + (message.is_mine ? 0 : 1)
+                  };
+                }
+                return chat;
+              }).sort((a, b) => {
+                // Sort by last activity (most recent first)
+                const timeA = new Date(a.last_activity_at).getTime();
+                const timeB = new Date(b.last_activity_at).getTime();
+                return timeB - timeA;
+              });
+            });
+          },
+          onChatUpdated: (chatId: number, updatedChat: any) => {
+            if (!isMounted.current) return;
+            
+            console.log(`Chat ${chatId} updated:`, updatedChat);
+            
+            setChats(prevChats => {
+              return prevChats.map(chat => {
+                if (chat.id === chatId) {
+                  return { ...chat, ...updatedChat };
+                }
+                return chat;
+              });
+            });
+          },
+          onUnreadCountChanged: (chatId: number, unreadCount: number) => {
+            if (!isMounted.current) return;
+            
+            console.log(`Unread count changed for chat ${chatId}:`, unreadCount);
+            
+            setChats(prevChats => {
+              return prevChats.map(chat => {
+                if (chat.id === chatId) {
+                  return { ...chat, unread_count: unreadCount };
+                }
+                return chat;
+              });
+            });
+          }
+        });
+      } catch (error) {
+        console.error('Error initializing WebSocket for chats:', error);
+      }
+    };
+
+    initializeWebSocket();
+
+    // Cleanup function
+    return () => {
+      isMounted.current = false;
+      webSocketService.unsubscribeFromChatList();
+    };
+  }, []);
+
+  // Refresh chats when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      if (isMounted.current) {
+        fetchChats();
+      }
+    }, [])
+  );
+
+  // Initialize and load data
+  useEffect(() => {
+    const initializeAndLoad = async () => {
+      try {
+        // Force database migration first
+        await initializeChatsService();
+        
+        // Then load chats
+        await fetchChats();
+      } catch (error) {
+        console.error('Error initializing chats:', error);
+        setError('Failed to load chats. Please try again.');
+      }
+    };
+
+    initializeAndLoad();
   }, []);
 
   const handleRefresh = () => {
     fetchChats(true);
   };
 
-  const handleChatPress = (chatId: number) => {
-    router.push(`/chat/${chatId}`);
+  const handleChatPress = async (chatId: number) => {
+    try {
+      // Mark chat as read when user opens it
+      await chatsService.markChatAsRead(chatId);
+      
+      // Update local state to reflect read status
+      setChats(prevChats => {
+        return prevChats.map(chat => {
+          if (chat.id === chatId) {
+            return { ...chat, unread_count: 0 };
+          }
+          return chat;
+        });
+      });
+      
+      // Navigate to chat
+      router.push(`/chat/${chatId}`);
+    } catch (error) {
+      console.error('Error marking chat as read:', error);
+      // Still navigate even if marking as read fails
+      router.push(`/chat/${chatId}`);
+    }
   };
 
   const renderContent = () => {
@@ -262,6 +413,14 @@ export default function ChatsScreen() {
       <ScrollView
         flex={1}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            colors={["#8B5CF6"]}
+            tintColor="#8B5CF6"
+          />
+        }
       >
         <VStack>
           {chats.map((chat) => (

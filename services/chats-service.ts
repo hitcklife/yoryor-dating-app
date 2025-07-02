@@ -105,6 +105,8 @@ export interface Message {
   created_at: string;
   updated_at: string;
   is_mine?: boolean;
+  is_read?: boolean;
+  read_at?: string | null;
   sender?: {
     id: number;
     email: string;
@@ -138,7 +140,9 @@ export interface MessagePagination {
   total: number;
   loaded: number;
   has_more: boolean;
-  oldest_message_id: number;
+  current_page: number;
+  last_page: number;
+  per_page: number;
 }
 
 export interface ChatsResponse {
@@ -212,6 +216,28 @@ export function getProfilePhotoUrl(user: OtherUser | null, useHighRes: boolean =
   }
 
   return null;
+}
+
+// Helper function to check if a message has been read by a specific user
+export function isMessageReadByUser(message: Message, userId: number): boolean {
+  return message.is_read || false;
+}
+
+// Helper function to get read status for a message (for UI display)
+export function getMessageReadStatus(message: Message, currentUserId: number, otherUserId: number): 'sent' | 'delivered' | 'read' {
+  if (!message.is_mine) {
+    return 'sent'; // For received messages, we don't show read status
+  }
+
+  if (message.is_read) {
+    return 'read';
+  }
+
+  if (message.status === 'sent' || message.status === 'delivered') {
+    return 'delivered';
+  }
+
+  return 'sent';
 }
 
 class ChatsService {
@@ -299,55 +325,53 @@ class ChatsService {
         throw new Error('Current user ID not found');
       }
 
+      console.log('Getting chat details for chat:', chatId);
+
       // Always try SQLite first for better performance
       const offlineChat = await sqliteService.getChatById(chatId);
       const offlineMessages = await sqliteService.getMessagesByChatId(chatId);
 
       const isConnected = await NetInfo.fetch().then(state => state.isConnected);
 
-      // If we have offline data and no internet, return it
-      if (!isConnected && offlineChat && offlineMessages) {
-        console.log('No internet connection, using SQLite data...');
-        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
-
-        return {
-          status: 'success',
-          data: {
-            chat: offlineChat,
-            messages: messagesWithOwnership,
-            pagination: {
-              total: messagesWithOwnership.length,
-              loaded: messagesWithOwnership.length,
-              has_more: false,
-              oldest_message_id: messagesWithOwnership[0]?.id || 0
-            }
-          }
-        };
-      }
-
-      // If we have internet, fetch fresh data only if we don't have recent local data
       if (isConnected) {
-        const token = await AsyncStorage.getItem('auth_token');
-        if (!token) {
-          throw new Error('No auth token found');
-        }
+        console.log('Making API call for fresh data...');
+        const response = await apiClient.chats.getById(chatId, page, CONFIG.APP.chatMessagesPageSize);
 
-              const response = await apiClient.chats.getById(chatId, page, CONFIG.APP.chatMessagesPageSize);
+        console.log('API response status:', response.status);
 
-        if (response.data.status === 'success') {
-          const chatData = response.data.data;
+        if (response.status === 'success') {
+          const chatData = response.data;
+          
+          // Extract messages from the nested structure
+          const messagesArray = chatData.messages?.data || [];
+          const messagePagination = chatData.pagination || {
+            total: chatData.messages?.total || 0,
+            per_page: chatData.messages?.per_page || 20,
+            current_page: chatData.messages?.current_page || 1,
+            last_page: chatData.messages?.last_page || 1
+          };
 
           // Add ownership to messages based on current user ID
-          const messagesWithOwnership = addMessageOwnership(chatData.messages, currentUserId);
+          const messagesWithOwnership = addMessageOwnership(messagesArray, currentUserId);
+
+          console.log('Processed API messages:', messagesWithOwnership.length);
 
           // Store data in SQLite for offline access
           await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
 
           return {
-            ...response.data,
+            status: 'success',
             data: {
-              ...chatData,
-              messages: messagesWithOwnership
+              chat: chatData.chat,
+              messages: messagesWithOwnership,
+              pagination: {
+                total: messagePagination.total,
+                loaded: messagesWithOwnership.length,
+                has_more: messagePagination.current_page < messagePagination.last_page,
+                current_page: messagePagination.current_page,
+                last_page: messagePagination.last_page,
+                per_page: messagePagination.per_page
+              }
             }
           };
         }
@@ -355,6 +379,7 @@ class ChatsService {
 
       // Fallback to offline data if available
       if (offlineChat && offlineMessages) {
+        console.log('Using offline fallback data');
         const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
 
         return {
@@ -366,12 +391,15 @@ class ChatsService {
               total: messagesWithOwnership.length,
               loaded: messagesWithOwnership.length,
               has_more: false,
-              oldest_message_id: messagesWithOwnership[0]?.id || 0
+              current_page: 1,
+              last_page: 1,
+              per_page: messagesWithOwnership.length
             }
           }
         };
       }
 
+      console.log('No data available, returning null');
       return null;
     } catch (error) {
       console.error('Error fetching chat details:', error);
@@ -383,6 +411,7 @@ class ChatsService {
         const offlineMessages = await sqliteService.getMessagesByChatId(chatId);
 
         if (offlineChat && offlineMessages) {
+          console.log('Error fallback to offline data');
           const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
 
           return {
@@ -394,7 +423,9 @@ class ChatsService {
                 total: messagesWithOwnership.length,
                 loaded: messagesWithOwnership.length,
                 has_more: false,
-                oldest_message_id: messagesWithOwnership[0]?.id || 0
+                current_page: 1,
+                last_page: 1,
+                per_page: messagesWithOwnership.length
               }
             }
           };
@@ -500,121 +531,295 @@ class ChatsService {
     }
   }
 
-  async loadMoreMessages(chatId: number, oldestMessageId: number): Promise<{
+  async loadMoreMessages(chatId: number, currentPage: number): Promise<{
     status: string;
     data: { chat: any; messages: Message[]; pagination: any }
   }> {
     try {
+      const nextPage = currentPage + 1;
+      console.log(`Loading more messages for chat ${chatId}, page ${nextPage}`);
+      
+      // Use the same getChatDetails method but with the next page
+      const response = await this.getChatDetails(chatId, nextPage);
+      
+      if (response?.status === 'success') {
+        return response;
+      }
+
+      return {
+        status: 'error',
+        data: { chat: null, messages: [], pagination: null }
+      };
+    } catch (error) {
+      console.error('Error loading more messages:', error);
+
+      // Fallback to SQLite
       const currentUserId = await this.getCurrentUser();
-      if (!currentUserId) {
-        throw new Error('Current user ID not found');
-      }
+      if (currentUserId) {
+        const offlineMessages = await sqliteService.getMessagesByChatId(chatId, CONFIG.APP.chatMessagesPageSize);
+        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
 
-      // First check if we have older messages in SQLite
-      const hasLocalMessages = await sqliteService.hasMessagesBeforeId(chatId, oldestMessageId);
-
-      if (hasLocalMessages) {
-        console.log('Loading older messages from SQLite...');
-        const localMessages = await sqliteService.getMessagesBeforeId(chatId, oldestMessageId, 20);
-
-        if (localMessages.length > 0) {
-          return {
-            status: 'success',
-            data: {
-              chat: null,
-              messages: localMessages,
-              pagination: {
-                total: localMessages.length,
-                loaded: localMessages.length,
-                has_more: localMessages.length === 20, // Assume more if we got full batch
-                oldest_message_id: localMessages[0]?.id || oldestMessageId
-              }
-            }
-          };
-        }
-      }
-
-      // If no local messages or need to fetch from server
-      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
-
-      if (!isConnected) {
-        // No internet and no local messages
         return {
           status: 'success',
           data: {
             chat: null,
-            messages: [],
+            messages: messagesWithOwnership,
             pagination: {
-              total: 0,
-              loaded: 0,
+              total: messagesWithOwnership.length,
+              loaded: messagesWithOwnership.length,
               has_more: false,
-              oldest_message_id: oldestMessageId
+              current_page: 1,
+              last_page: 1,
+              per_page: messagesWithOwnership.length
             }
           }
         };
       }
 
+      throw error;
+    }
+  }
+
+  /**
+   * Edit a text message
+   * @param chatId The chat ID
+   * @param messageId The message ID to edit
+   * @param newContent The new content for the message
+   * @returns Promise with the updated message
+   */
+  async editMessage(chatId: number, messageId: number, newContent: string): Promise<{
+    status: string;
+    message: string;
+    data: { message: Message };
+  } | null> {
+    try {
       const token = await AsyncStorage.getItem('auth_token');
       if (!token) {
         throw new Error('No auth token found');
       }
 
-      console.log('Fetching older messages from server...');
-      const response = await apiClient.get(`/api/v1/chats/${chatId}`, {
-        params: {
-          before_message_id: oldestMessageId,
-          per_page: 20
-        },
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Accept': 'application/json',
-        }
+      const currentUserId = await this.getCurrentUser();
+      if (!currentUserId) {
+        throw new Error('Current user ID not found');
+      }
+
+      const response = await apiClient.put(`/api/v1/chats/${chatId}/messages/${messageId}`, {
+        content: newContent
       });
 
-      if (response.status === 'success' && response.data && response.data.data && response.data.data.messages) {
-        const messages = response.data.data.messages;
+      if (response.status === 'success' && response.data) {
+        const message = response.data.message;
 
-        // Add ownership to messages
-        const messagesWithOwnership = addMessageOwnership(messages, currentUserId);
+        // Add ownership to the edited message
+        const messageWithOwnership = {
+          ...message,
+          is_mine: message.sender_id === currentUserId
+        };
 
-        // Store only new messages in SQLite (avoid duplicates)
-        for (const message of messagesWithOwnership) {
-          const exists = await sqliteService.messageExists(message.id);
-          if (!exists) {
-            await sqliteService.storeMessage(message);
-          }
-        }
+        // Update message in SQLite
+        await sqliteService.storeMessage(messageWithOwnership);
 
         return {
-          status: 'success',
+          status: response.status,
+          message: response.message || 'Message edited successfully',
           data: {
-            chat: response.data.data.chat,
-            messages: messagesWithOwnership,
-            pagination: response.data.data.pagination
+            message: messageWithOwnership
           }
         };
       }
 
-      return {
-        status: 'success',
-        data: {
-          chat: null,
-          messages: [],
-          pagination: {
-            total: 0,
-            loaded: 0,
-            has_more: false,
-            oldest_message_id: oldestMessageId
-          }
-        }
-      };
-
+      return null;
     } catch (error) {
-      console.error('Error loading more messages:', error);
+      console.error('Error editing message:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Delete a message
+   * @param chatId The chat ID
+   * @param messageId The message ID to delete
+   * @returns Promise with success status
+   */
+  async deleteMessage(chatId: number, messageId: number): Promise<{
+    status: string;
+    message: string;
+  } | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const response = await apiClient.delete(`/api/v1/chats/${chatId}/messages/${messageId}`);
+
+      if (response.status === 'success') {
+        // Mark message as deleted in SQLite (soft delete)
+        await sqliteService.updateMessageStatus(messageId, 'deleted');
+
+        return {
+          status: response.status,
+          message: response.message || 'Message deleted successfully'
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reply to a message
+   * @param chatId The chat ID
+   * @param content The reply content
+   * @param replyToMessageId The ID of the message being replied to
+   * @param messageType The type of message (default: 'text')
+   * @returns Promise with the sent reply message
+   */
+  async replyToMessage(
+    chatId: number, 
+    content: string, 
+    replyToMessageId: number,
+    messageType: string = 'text'
+  ): Promise<SendMessageResponse | null> {
+    return this.sendMessage(chatId, content, messageType, undefined, undefined, replyToMessageId);
+  }
+
+  /**
+   * Mark messages as read in a specific chat
+   * @param chatId The chat ID
+   * @returns Promise with success status
+   */
+  async markMessagesAsRead(chatId: number): Promise<{
+    status: string;
+    message: string;
+    data: { count: number };
+  } | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const response = await apiClient.post(`/api/v1/chats/${chatId}/read`);
+
+      if (response.status === 'success') {
+        return {
+          status: response.status,
+          message: response.message || 'Messages marked as read',
+          data: {
+            count: response.data?.count || 0
+          }
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error marking messages as read:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get unread messages count across all chats
+   * @returns Promise with unread count data
+   */
+  async getUnreadCount(): Promise<{
+    status: string;
+    data: {
+      total_unread: number;
+      chats: Array<{ chat_id: number; unread_count: number }>;
+    };
+  } | null> {
+    try {
+      const token = await AsyncStorage.getItem('auth_token');
+      if (!token) {
+        throw new Error('No auth token found');
+      }
+
+      const response = await apiClient.get('/api/v1/chats/unread-count');
+
+      if (response.status === 'success') {
+        return {
+          status: response.status,
+          data: response.data
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error getting unread count:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update a specific chat with new message data
+   * This is used for real-time updates when new messages arrive
+   */
+  async updateChatWithNewMessage(chatId: number, newMessage: Message): Promise<void> {
+    try {
+      // Update the chat's last message in SQLite
+      await sqliteService.updateChatLastMessage(chatId, newMessage);
+      
+      // Update unread count if message is not from current user
+      const currentUserId = await this.getCurrentUser();
+      if (currentUserId && newMessage.sender_id !== currentUserId) {
+        await sqliteService.incrementChatUnreadCount(chatId);
+      }
+    } catch (error) {
+      console.error('Error updating chat with new message:', error);
+    }
+  }
+
+  /**
+   * Mark messages as read for a specific chat
+   */
+  async markChatAsRead(chatId: number): Promise<any> {
+    try {
+      const response = await apiClient.post(`/api/v1/chats/${chatId}/read`);
+      return response;
+    } catch (error) {
+      console.error('Error marking chat as read:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a single chat with its latest message
+   */
+  async getChatWithLatestMessage(chatId: number): Promise<Chat | null> {
+    try {
+      const chat = await sqliteService.getChatById(chatId);
+      if (chat) {
+        // Get the latest message for this chat
+        const latestMessage = await sqliteService.getLastMessageForChat(chatId);
+        if (latestMessage) {
+          chat.last_message = latestMessage;
+        }
+      }
+      return chat;
+    } catch (error) {
+      console.error('Error getting chat with latest message:', error);
+      return null;
     }
   }
 
 }
 
 export const chatsService = new ChatsService();
+
+// Initialize the service
+export async function initializeChatsService(): Promise<void> {
+  try {
+    // Force add missing columns if needed
+    await sqliteService.forceAddMissingColumns();
+    
+    console.log('Chats service initialized successfully');
+  } catch (error) {
+    console.error('Error initializing chats service:', error);
+    throw error;
+  }
+}

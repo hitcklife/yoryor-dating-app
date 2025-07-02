@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -25,11 +25,14 @@ import {
   BadgeText,
 } from '@gluestack-ui/themed';
 import { useColorScheme } from 'nativewind';
-import { agoraService } from '@/services/agora-service';
+import { videoSDKService } from '@/services/videosdk-service';
 import {
-  RtcSurfaceView,
-  VideoSourceType,
-} from 'react-native-agora';
+  MeetingProvider,
+  useMeeting,
+  useParticipant,
+  MediaStream,
+  RTCView,
+} from '@videosdk.live/react-native-sdk';
 import { LinearGradient } from 'expo-linear-gradient';
 
 interface CallScreenProps {
@@ -43,20 +46,132 @@ interface CallScreenProps {
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
-const CallScreen: React.FC<CallScreenProps> = ({
-  chatId,
-  userId,
-  userName,
-  userAvatar,
-  isVideoCall,
-  onEndCall,
-}) => {
+// Video Call Meeting Component
+const VideoCallMeeting: React.FC<{
+  userName: string;
+  userAvatar: string;
+  isVideoCall: boolean;
+  onEndCall: () => void;
+  chatId: number;
+  meetingId: string;
+}> = ({ userName, userAvatar, isVideoCall, onEndCall, chatId, meetingId }) => {
   const { colorScheme } = useColorScheme();
   const isDark = colorScheme === 'dark';
 
+  // Use refs to prevent infinite loops and race conditions
+  const joinedRef = useRef(false);
+  const isJoiningRef = useRef(false);
+  const hasLeftRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  // Stable callback references
+  const onEndCallRef = useRef(onEndCall);
+  const meetingIdRef = useRef(meetingId);
+  
+  // Update refs when props change
+  useEffect(() => {
+    onEndCallRef.current = onEndCall;
+    meetingIdRef.current = meetingId;
+  });
+
+  // Memoized event handlers to prevent recreating on every render
+  const handleMeetingJoined = useCallback(() => {
+    if (!mountedRef.current || joinedRef.current) return;
+    
+    console.log('✅ Meeting joined successfully - ID:', meetingIdRef.current);
+    joinedRef.current = true;
+    isJoiningRef.current = false;
+    
+    if (mountedRef.current) {
+      setCallStatus('connected');
+      setJoined(true);
+      console.log('📞 Call status set to connected');
+    }
+  }, []);
+
+  const handleMeetingLeft = useCallback(() => {
+    if (!mountedRef.current || hasLeftRef.current) return;
+    
+    console.log('👋 Meeting left - Status:', callStatus, 'Joined:', joinedRef.current);
+    
+    // Only handle unexpected leaves (not when we intentionally ended the call)
+    if (callStatus !== 'ended' && mountedRef.current) {
+      console.log('🚨 Unexpected meeting left - may be a connection issue');
+      // Give time for potential reconnection
+      setTimeout(() => {
+        if (mountedRef.current && callStatus !== 'ended' && !hasLeftRef.current) {
+          console.log('🔄 No reconnection after 2 seconds, ending call');
+          hasLeftRef.current = true;
+          setCallStatus('ended');
+          setTimeout(() => {
+            if (mountedRef.current) {
+              onEndCallRef.current();
+            }
+          }, 100);
+        }
+      }, 2000);
+    }
+  }, [callStatus]);
+
+  const handleParticipantJoined = useCallback((participant: any) => {
+    if (!mountedRef.current) return;
+    
+    console.log('👥 Participant joined:', participant.id, participant.displayName || 'Unknown');
+    setRemoteParticipantId(participant.id);
+    if (callStatus !== 'connected') {
+      setCallStatus('connected');
+    }
+  }, [callStatus]);
+
+  const handleParticipantLeft = useCallback((participant: any) => {
+    if (!mountedRef.current) return;
+    
+    console.log('👋 Participant left:', participant.id);
+    setRemoteParticipantId(prev => prev === participant.id ? null : prev);
+  }, []);
+
+  const handleError = useCallback((error: any) => {
+    if (!mountedRef.current) return;
+    
+    console.error('❌ Meeting error:', error);
+    console.error('❌ Error details:', JSON.stringify(error, null, 2));
+    
+    const errorStr = error.toString().toLowerCase();
+    if (errorStr.includes('token') || errorStr.includes('authentication')) {
+      console.error('🔐 TOKEN ERROR DETECTED');
+      Alert.alert('Authentication Error', 'Video call token issue. Please try again.');
+      if (mountedRef.current) {
+        onEndCallRef.current();
+      }
+    } else if (errorStr.includes('meeting') || errorStr.includes('room')) {
+      console.error('🏠 MEETING ERROR DETECTED');
+      Alert.alert('Meeting Error', 'Meeting room issue. Please try again.');
+      if (mountedRef.current) {
+        onEndCallRef.current();
+      }
+    } else if (errorStr.includes('permission')) {
+      console.error('🔒 PERMISSION ERROR DETECTED');
+      Alert.alert('Permission Error', 'No permission to join this meeting.');
+      if (mountedRef.current) {
+        onEndCallRef.current();
+      }
+    } else {
+      console.log('⚠️ Non-critical error, continuing...:', errorStr);
+    }
+  }, []);
+
+  // Get meeting and participants from VideoSDK
+  const { join, leave, toggleMic, toggleWebcam, changeWebcam, participants, localParticipant } = useMeeting({
+    onMeetingJoined: handleMeetingJoined,
+    onMeetingLeft: handleMeetingLeft,
+    onParticipantJoined: handleParticipantJoined,
+    onParticipantLeft: handleParticipantLeft,
+    onError: handleError,
+  });
+
   // Call state
   const [joined, setJoined] = useState(false);
-  const [remoteUid, setRemoteUid] = useState<number | null>(null);
+  const [remoteParticipantId, setRemoteParticipantId] = useState<string | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(true);
   const [isCameraOff, setIsCameraOff] = useState(!isVideoCall);
@@ -64,7 +179,6 @@ const CallScreen: React.FC<CallScreenProps> = ({
   const [callStatus, setCallStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting');
   const [callDuration, setCallDuration] = useState(0);
   const [showControls, setShowControls] = useState(true);
-  const [localUid, setLocalUid] = useState<number>(0);
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -75,10 +189,51 @@ const CallScreen: React.FC<CallScreenProps> = ({
   const durationTimer = useRef<any>(null);
   const controlsTimer = useRef<any>(null);
 
+  // Get remote participant data
+  const remoteParticipant = remoteParticipantId ? participants.get(remoteParticipantId) : null;
+
+  // Auto-join the meeting when component mounts (only once with safeguards)
   useEffect(() => {
-    requestPermissions();
+    if (!mountedRef.current || joinedRef.current || isJoiningRef.current || !join) {
+      return;
+    }
+
+    isJoiningRef.current = true;
+    console.log('🔄 Attempting to join meeting:', meetingId);
+    
+    // Add a longer delay to ensure VideoSDK is fully ready
+    const joinTimer = setTimeout(() => {
+      if (mountedRef.current && !joinedRef.current && join) {
+        console.log('🚀 Calling join() now...');
+        try {
+          join();
+          console.log('📞 join() called successfully');
+        } catch (error) {
+          console.error('💥 Error calling join():', error);
+          isJoiningRef.current = false;
+        }
+      }
+    }, 1000);
+
     return () => {
-      cleanup();
+      clearTimeout(joinTimer);
+    };
+  }, [join, meetingId]); // Only depend on join function and meetingId
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      console.log('🧹 VideoCallMeeting unmounting, cleaning up...');
+      mountedRef.current = false;
+      joinedRef.current = false;
+      hasLeftRef.current = true;
+      
+      if (durationTimer.current) {
+        clearInterval(durationTimer.current);
+      }
+      if (controlsTimer.current) {
+        clearTimeout(controlsTimer.current);
+      }
     };
   }, []);
 
@@ -89,94 +244,9 @@ const CallScreen: React.FC<CallScreenProps> = ({
     }
   }, [callStatus]);
 
-  const requestPermissions = async () => {
-    if (Platform.OS === 'android') {
-      try {
-        const grants = await PermissionsAndroid.requestMultiple([
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-          PermissionsAndroid.PERMISSIONS.CAMERA,
-        ]);
-
-        const audioGranted = grants[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === PermissionsAndroid.RESULTS.GRANTED;
-        const cameraGranted = grants[PermissionsAndroid.PERMISSIONS.CAMERA] === PermissionsAndroid.RESULTS.GRANTED;
-
-        if (!audioGranted) {
-          Alert.alert('Permission Required', 'Audio permission is required for calls');
-          return;
-        }
-
-        if (isVideoCall && !cameraGranted) {
-          Alert.alert('Permission Required', 'Camera permission is required for video calls');
-          return;
-        }
-
-        initializeCall();
-      } catch (error) {
-        console.error('Permission request error:', error);
-        Alert.alert('Error', 'Failed to request permissions');
-      }
-    } else {
-      // iOS permissions are handled by Info.plist
-      initializeCall();
-    }
-  };
-
-  const initializeCall = async () => {
-    try {
-      console.log('Initializing call...');
-      await agoraService.initialize();
-
-      agoraService.onJoinSuccess((uid) => {
-        console.log('Successfully joined channel with UID:', uid);
-        setJoined(true);
-        setLocalUid(uid);
-        setCallStatus('connected');
-      });
-
-      agoraService.onUserJoined((uid) => {
-        console.log('Remote user joined with UID:', uid);
-        setRemoteUid(uid);
-        setCallStatus('connected');
-      });
-
-      agoraService.onUserOffline((uid) => {
-        console.log('Remote user left:', uid);
-        setRemoteUid(null);
-      });
-
-      agoraService.onError((err) => {
-        console.error('Agora error:', err);
-        Alert.alert('Call Error', 'An error occurred during the call');
-      });
-
-      // Use a simple test channel name
-      const testChannelId = `test-${chatId}`;
-      console.log('Joining channel:', testChannelId);
-
-      // Use the updated join method without backend
-      await agoraService.joinChannel(testChannelId, userId);
-
-      if (!isVideoCall) {
-        await agoraService.toggleVideo(false);
-        setIsCameraOff(true);
-      }
-
-      startPulseAnimation();
-    } catch (error) {
-      console.error('Failed to initialize call:', error);
-      Alert.alert('Call Failed', 'Failed to start the call. Please try again.');
-      handleEndCall();
-    }
-  };
-
-  const cleanup = () => {
-    if (durationTimer.current) {
-      clearInterval(durationTimer.current);
-    }
-    if (controlsTimer.current) {
-      clearTimeout(controlsTimer.current);
-    }
-  };
+  useEffect(() => {
+    startPulseAnimation();
+  }, []);
 
   const startPulseAnimation = () => {
     Animated.loop(
@@ -196,8 +266,13 @@ const CallScreen: React.FC<CallScreenProps> = ({
   };
 
   const startCallTimer = () => {
+    if (durationTimer.current) {
+      clearInterval(durationTimer.current);
+    }
     durationTimer.current = setInterval(() => {
-      setCallDuration(prev => prev + 1);
+      if (mountedRef.current) {
+        setCallDuration(prev => prev + 1);
+      }
     }, 1000);
   };
 
@@ -207,7 +282,7 @@ const CallScreen: React.FC<CallScreenProps> = ({
     }
 
     controlsTimer.current = setTimeout(() => {
-      if (isVideoCall && joined) {
+      if (isVideoCall && joined && mountedRef.current) {
         hideControls();
       }
     }, 5000);
@@ -218,10 +293,16 @@ const CallScreen: React.FC<CallScreenProps> = ({
       toValue: 0,
       duration: 300,
       useNativeDriver: true,
-    }).start(() => setShowControls(false));
+    }).start(() => {
+      if (mountedRef.current) {
+        setShowControls(false);
+      }
+    });
   };
 
   const showControlsTemporarily = () => {
+    if (!mountedRef.current) return;
+    
     setShowControls(true);
     Animated.timing(controlsOpacity, {
       toValue: 1,
@@ -237,88 +318,169 @@ const CallScreen: React.FC<CallScreenProps> = ({
     return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
-  const handleEndCall = async () => {
-    try {
-      Animated.timing(fadeAnim, {
-        toValue: 0,
-        duration: 300,
-        useNativeDriver: true,
-      }).start();
-
-      await agoraService.leaveChannel();
-      setCallStatus('ended');
-      cleanup();
-      setTimeout(onEndCall, 300);
-    } catch (error) {
-      console.error('Error ending call:', error);
-      onEndCall();
+  const handleEndCall = useCallback(async () => {
+    if (!mountedRef.current || hasLeftRef.current || callStatus === 'ended') {
+      return;
     }
-  };
+    
+    console.log('🔚 User initiated call end');
+    hasLeftRef.current = true;
+    setCallStatus('ended');
+    
+    Animated.timing(fadeAnim, {
+      toValue: 0,
+      duration: 300,
+      useNativeDriver: true,
+    }).start();
+
+    try {
+      if (leave) {
+        await leave();
+      }
+    } catch (error) {
+      console.error('Error leaving meeting:', error);
+    }
+
+    // Clean up timers
+    if (durationTimer.current) {
+      clearInterval(durationTimer.current);
+    }
+    if (controlsTimer.current) {
+      clearTimeout(controlsTimer.current);
+    }
+
+    setTimeout(() => {
+      if (mountedRef.current) {
+        onEndCallRef.current();
+      }
+    }, 300);
+  }, [callStatus, leave, fadeAnim]);
 
   const toggleMute = async () => {
+    if (!mountedRef.current) return;
+    
     try {
-      await agoraService.toggleAudio(!isMuted);
-      setIsMuted(!isMuted);
+      await toggleMic();
+      setIsMuted(prev => !prev);
     } catch (error) {
       console.error('Error toggling mute:', error);
     }
   };
 
   const toggleSpeaker = async () => {
+    if (!mountedRef.current) return;
+    
     try {
-      await agoraService.toggleSpeakerphone(!isSpeakerOn);
-      setIsSpeakerOn(!isSpeakerOn);
+      // VideoSDK handles speaker automatically
+      setIsSpeakerOn(prev => !prev);
     } catch (error) {
       console.error('Error toggling speaker:', error);
     }
   };
 
   const toggleCamera = async () => {
+    if (!mountedRef.current) return;
+    
     try {
-      await agoraService.toggleVideo(isCameraOff);
-      setIsCameraOff(!isCameraOff);
+      await toggleWebcam();
+      setIsCameraOff(prev => !prev);
     } catch (error) {
       console.error('Error toggling camera:', error);
     }
   };
 
   const switchCamera = async () => {
+    if (!mountedRef.current) return;
+    
     try {
-      await agoraService.switchCamera();
-      setIsFrontCamera(!isFrontCamera);
+      await changeWebcam();
+      setIsFrontCamera(prev => !prev);
     } catch (error) {
       console.error('Error switching camera:', error);
     }
+  };
+
+  // Remote Participant View Component
+  const RemoteParticipantView = ({ participantId }: { participantId: string }) => {
+    const { webcamStream, webcamOn, displayName } = useParticipant(participantId);
+
+    return webcamOn && webcamStream ? (
+      <RTCView
+        streamURL={new MediaStream([webcamStream.track]).toURL()}
+        objectFit={"cover"}
+        style={styles.fullScreenVideo}
+      />
+    ) : (
+      <LinearGradient
+        colors={isDark ? ['#1a1a2e', '#16213e', '#0f3460'] : ['#667eea', '#764ba2', '#f093fb']}
+        style={styles.fullScreenVideo}
+      >
+        <Center flex={1}>
+          <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+            <Avatar size="2xl" borderWidth={4} borderColor="$white">
+              <AvatarImage source={{ uri: userAvatar }} alt={displayName || userName} />
+            </Avatar>
+          </Animated.View>
+          <VStack alignItems="center" mt="$6" space="md">
+            <Text color="$white" fontSize="$2xl" fontWeight="$bold">
+              {displayName || userName}
+            </Text>
+            <Badge variant="solid" bg="rgba(255,255,255,0.2)" borderRadius="$full">
+              <BadgeText color="$white" fontSize="$sm">
+                Connected
+              </BadgeText>
+            </Badge>
+          </VStack>
+        </Center>
+      </LinearGradient>
+    );
+  };
+
+  // Local Participant View Component
+  const LocalParticipantView = () => {
+    const { webcamStream, webcamOn } = useParticipant(localParticipant?.id || '');
+
+    if (!localParticipant?.id || !webcamOn || !webcamStream || isCameraOff) return null;
+
+    return (
+      <Box
+        position="absolute"
+        top={100}
+        right={20}
+        width={100}
+        height={140}
+        bg="$backgroundDark900"
+        borderRadius="$xl"
+        overflow="hidden"
+        borderWidth={3}
+        borderColor="$white"
+        style={styles.localVideoContainer}
+      >
+        <RTCView
+          streamURL={new MediaStream([webcamStream.track]).toURL()}
+          objectFit={"cover"}
+          style={styles.localVideo}
+        />
+        <Box
+          position="absolute"
+          top="$2"
+          right="$2"
+          bg="rgba(0,0,0,0.6)"
+          borderRadius="$full"
+          p="$1"
+        >
+          <Ionicons name="person" size={12} color="white" />
+        </Box>
+      </Box>
+    );
   };
 
   const renderVideoCall = () => {
     return (
       <Box flex={1} position="relative" bg="$backgroundDark900">
         {/* Remote user's video */}
-        {remoteUid ? (
-          <Box flex={1}>
-            <RtcSurfaceView
-              canvas={{
-                uid: remoteUid,
-                sourceType: VideoSourceType.VideoSourceRemote,
-                renderMode: 1, // Hidden mode
-              }}
-              style={styles.fullScreenVideo}
-            />
-            <Box
-              position="absolute"
-              top="$4"
-              right="$4"
-              bg="rgba(0,0,0,0.6)"
-              borderRadius="$md"
-              px="$3"
-              py="$2"
-            >
-              <Text color="$white" fontSize="$sm">
-                {userName}
-              </Text>
-            </Box>
-          </Box>
+        {remoteParticipantId ? (
+          <RemoteParticipantView participantId={remoteParticipantId} />
         ) : (
           <LinearGradient
             colors={isDark ? ['#1a1a2e', '#16213e', '#0f3460'] : ['#667eea', '#764ba2', '#f093fb']}
@@ -350,40 +512,7 @@ const CallScreen: React.FC<CallScreenProps> = ({
         )}
 
         {/* Local user's video */}
-        {joined && !isCameraOff && (
-          <Box
-            position="absolute"
-            top={100}
-            right={20}
-            width={100}
-            height={140}
-            bg="$backgroundDark900"
-            borderRadius="$xl"
-            overflow="hidden"
-            borderWidth={3}
-            borderColor="$white"
-            style={styles.localVideoContainer}
-          >
-            <RtcSurfaceView
-              canvas={{
-                uid: 0,
-                sourceType: VideoSourceType.VideoSourceCamera,
-                renderMode: 1, // Hidden mode
-              }}
-              style={styles.localVideo}
-            />
-            <Box
-              position="absolute"
-              top="$2"
-              right="$2"
-              bg="rgba(0,0,0,0.6)"
-              borderRadius="$full"
-              p="$1"
-            >
-              <Ionicons name="person" size={12} color="white" />
-            </Box>
-          </Box>
-        )}
+        <LocalParticipantView />
 
         {/* Debug info */}
         <Box
@@ -395,16 +524,19 @@ const CallScreen: React.FC<CallScreenProps> = ({
           p="$2"
         >
           <Text color="$white" fontSize="$xs">
+            Meeting: {meetingId}
+          </Text>
+          <Text color="$white" fontSize="$xs">
             Status: {joined ? 'Connected' : 'Connecting'}
           </Text>
           <Text color="$white" fontSize="$xs">
-            Local UID: {localUid}
+            Local ID: {localParticipant?.id || 'None'}
           </Text>
           <Text color="$white" fontSize="$xs">
-            Remote UID: {remoteUid || 'None'}
+            Remote ID: {remoteParticipantId || 'None'}
           </Text>
           <Text color="$white" fontSize="$xs">
-            Channel: test-{chatId}
+            Participants: {participants.size}
           </Text>
         </Box>
 
@@ -451,7 +583,7 @@ const CallScreen: React.FC<CallScreenProps> = ({
               >
                 <BadgeText color="$white" fontSize="$md" fontWeight="$semibold">
                   {joined
-                    ? remoteUid
+                    ? remoteParticipantId
                       ? formatDuration(callDuration)
                       : 'Waiting for response...'
                     : 'Connecting...'}
@@ -481,7 +613,10 @@ const CallScreen: React.FC<CallScreenProps> = ({
           p="$3"
         >
           <Text color="$white" fontSize="$sm" textAlign="center">
-            Channel: test-{chatId} | Local UID: {localUid} | Remote: {remoteUid || 'Waiting...'}
+            Meeting: {meetingId}
+          </Text>
+          <Text color="$white" fontSize="$sm" textAlign="center">
+            Participants: {participants.size} | Local: {localParticipant?.id} | Remote: {remoteParticipantId || 'Waiting...'}
           </Text>
         </Box>
       </LinearGradient>
@@ -600,6 +735,73 @@ const CallScreen: React.FC<CallScreenProps> = ({
         )}
       </SafeAreaView>
     </Animated.View>
+  );
+};
+
+// Main CallScreen Component
+const CallScreen: React.FC<CallScreenProps> = ({
+  chatId,
+  userId,
+  userName,
+  userAvatar,
+  isVideoCall,
+  onEndCall,
+}) => {
+  const [meetingId, setMeetingId] = useState<string | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const initializeCall = async () => {
+      try {
+        // Initialize VideoSDK service
+        await videoSDKService.initialize();
+
+        // Create a meeting using the chat ID as custom room ID
+        console.log('Creating/getting meeting for chat:', chatId);
+        const meetingId = await videoSDKService.createMeetingForChat(chatId);
+        console.log('✅ Meeting ID for chat:', meetingId);
+        setMeetingId(meetingId);
+
+        // Get token
+        const videoToken = await videoSDKService.getToken();
+        setToken(videoToken);
+
+        setLoading(false);
+      } catch (error) {
+        console.error('Error initializing call:', error);
+        Alert.alert('Call Failed', 'Failed to start the call. Please try again.');
+        onEndCall();
+      }
+    };
+
+    initializeCall();
+  }, [chatId]);
+
+  if (loading || !meetingId || !token) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <Center flex={1}>
+          <Text color="$white" fontSize="$lg">Connecting...</Text>
+        </Center>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <MeetingProvider
+      config={videoSDKService.getMeetingConfig(meetingId, 'You')}
+      token={token}
+    >
+      <VideoCallMeeting
+        userName={userName}
+        userAvatar={userAvatar}
+        isVideoCall={isVideoCall}
+        onEndCall={onEndCall}
+        chatId={chatId}
+        meetingId={meetingId}
+      />
+    </MeetingProvider>
   );
 };
 

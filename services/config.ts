@@ -11,9 +11,10 @@ export const CONFIG = {
     forceTLS: true,
   },
 
-  // Agora Configuration
-  AGORA: {
-    appId: '8fa7c231530146ff8522ececbbe3d7a5', // Actual Agora App ID
+  // VideoSDK Configuration
+  VIDEOSDK: {
+    token: 'YOUR_VIDEOSDK_TOKEN_HERE', // Replace with actual VideoSDK token
+    apiEndpoint: 'https://api.videosdk.live/v2',
   },
 
   // Notification Configuration

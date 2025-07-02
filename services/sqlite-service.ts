@@ -1,5 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import { Chat, Message, OtherUser, Profile, ProfilePhoto, UserPivot } from './chats-service';
+import * as FileSystem from 'expo-file-system';
 
 /**
  * SQLite Database Service for chat data
@@ -7,7 +8,7 @@ import { Chat, Message, OtherUser, Profile, ProfilePhoto, UserPivot } from './ch
  */
 class SQLiteService {
   private db: SQLite.SQLiteDatabase | null = null;
-  private dbVersion: number = 1; // Current database version
+  private dbVersion = 2; // Updated to version 2 to include read status columns
   private isInitialized: boolean = false;
   private lastError: Error | null = null;
 
@@ -29,9 +30,11 @@ class SQLiteService {
    */
   private async initDatabase(): Promise<void> {
     try {
-      // Open the database
       this.db = await SQLite.openDatabaseAsync('yoryor_chats.db');
-
+      
+      // Create tables first
+      await this.createTables();
+      
       // Check if the version table exists and get the current version
       const { exists, version } = await this.checkDatabaseVersion();
 
@@ -47,8 +50,7 @@ class SQLiteService {
         this.dbVersion = version;
       }
 
-      // Create all tables
-      await this.createTables();
+      console.log('Database initialized successfully');
     } catch (error) {
       console.error('Error initializing database:', error);
       throw error;
@@ -190,14 +192,56 @@ class SQLiteService {
             updated_at TEXT,
             is_mine INTEGER,
             sender_email TEXT,
-            FOREIGN KEY (chat_id) REFERENCES chats (id) ON DELETE CASCADE
+            is_read INTEGER,
+            read_at TEXT,
+            FOREIGN KEY (chat_id) REFERENCES chats (id) ON DELETE CASCADE,
+            FOREIGN KEY (reply_to_message_id) REFERENCES messages (id)
           )
         `);
+
+        // Create indexes for better query performance
+        await this.createIndexes();
 
         console.log('All tables created successfully');
       });
     } catch (error) {
       console.error('Error creating tables:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create database indexes for optimal performance
+   */
+  private async createIndexes(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      // Chat indexes
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_chats_last_activity ON chats (last_activity_at DESC)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_chats_deleted ON chats (deleted_at)');
+
+      // Message indexes for fast retrieval
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages (chat_id)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_sent_at ON messages (sent_at DESC)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_chat_sent ON messages (chat_id, sent_at DESC)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_deleted ON messages (deleted_at)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to_message_id)');
+
+      // Other user indexes
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_other_users_chat_id ON other_users (chat_id)');
+
+      // Profile indexes
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles (user_id)');
+
+      // Profile photo indexes
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profile_photos_user_id ON profile_photos (user_id)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profile_photos_is_profile ON profile_photos (is_profile_photo)');
+
+      console.log('Database indexes created successfully');
+    } catch (error) {
+      console.error('Error creating indexes:', error);
       throw error;
     }
   }
@@ -280,19 +324,21 @@ class SQLiteService {
 
 
   /**
-   * Get messages by chat ID
+   * Get messages by chat ID ordered by newest first (for inverted FlatList)
    * @param chatId The chat ID to get messages for
+   * @param limit Maximum number of messages to retrieve
    * @returns Array of messages
    */
-  async getMessagesByChatId(chatId: number): Promise<Message[]> {
+  async getMessagesByChatId(chatId: number, limit: number = 50): Promise<Message[]> {
     if (!this.db) throw new Error('Database not initialized');
 
     try {
       const messages = await this.db.getAllAsync<any>(`
         SELECT * FROM messages 
         WHERE chat_id = ? AND deleted_at IS NULL 
-        ORDER BY sent_at ASC
-      `, [chatId]);
+        ORDER BY sent_at DESC
+        LIMIT ?
+      `, [chatId, limit]);
 
       return messages.map(msg => ({
         id: msg.id,
@@ -312,6 +358,8 @@ class SQLiteService {
         created_at: msg.created_at,
         updated_at: msg.updated_at,
         is_mine: msg.is_mine === 1,
+        is_read: msg.is_read === 1,
+        read_at: msg.read_at,
         sender: msg.sender_email ? {
           id: msg.sender_id,
           email: msg.sender_email
@@ -394,8 +442,8 @@ class SQLiteService {
         id, chat_id, sender_id, reply_to_message_id, content,
         message_type, media_data, media_url, thumbnail_url,
         status, is_edited, edited_at, sent_at, deleted_at,
-        created_at, updated_at, is_mine, sender_email
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, is_mine, sender_email, is_read, read_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       message.id,
       message.chat_id,
@@ -414,7 +462,9 @@ class SQLiteService {
       message.created_at,
       message.updated_at,
       message.is_mine ? 1 : 0,
-      message.sender?.email
+      message.sender?.email || null,
+      message.is_read ? 1 : 0,
+      message.read_at || null
     ]);
   }
 
@@ -590,9 +640,41 @@ class SQLiteService {
 
     console.log(`Migrating database from version ${fromVersion} to ${toVersion}`);
 
-    // Add migration logic here when needed
-    // For now, just update the version
-    await this.db.runAsync('UPDATE database_version SET version = ?', [toVersion]);
+    try {
+      // Migration from version 1 to 2: Add read status columns to messages table
+      if (fromVersion < 2 && toVersion >= 2) {
+        console.log('Adding read status columns to messages table...');
+        
+        // Check if columns already exist to avoid errors
+        const tableInfo = await this.db.getAllAsync<any>(`
+          PRAGMA table_info(messages)
+        `);
+        
+        const hasIsRead = tableInfo.some((col: any) => col.name === 'is_read');
+        const hasReadAt = tableInfo.some((col: any) => col.name === 'read_at');
+        
+        if (!hasIsRead) {
+          await this.db.execAsync(`
+            ALTER TABLE messages ADD COLUMN is_read INTEGER DEFAULT 0
+          `);
+          console.log('Added is_read column to messages table');
+        }
+        
+        if (!hasReadAt) {
+          await this.db.execAsync(`
+            ALTER TABLE messages ADD COLUMN read_at TEXT
+          `);
+          console.log('Added read_at column to messages table');
+        }
+      }
+
+      // Update the version
+      await this.db.runAsync('UPDATE database_version SET version = ?', [toVersion]);
+      console.log(`Database migrated successfully to version ${toVersion}`);
+    } catch (error) {
+      console.error('Error during database migration:', error);
+      throw error;
+    }
   }
 
   /**
@@ -795,8 +877,8 @@ class SQLiteService {
         id, chat_id, sender_id, reply_to_message_id, content,
         message_type, media_data, media_url, thumbnail_url,
         status, is_edited, edited_at, sent_at, deleted_at,
-        created_at, updated_at, is_mine, sender_email
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        created_at, updated_at, is_mine, sender_email, is_read, read_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       message.id,
       message.chat_id,
@@ -815,7 +897,9 @@ class SQLiteService {
       message.created_at,
       message.updated_at,
       message.is_mine ? 1 : 0,
-      message.sender?.email
+      message.sender?.email || null,
+      message.is_read ? 1 : 0,
+      message.read_at || null
     ]);
 
     console.log(`Message ${message.id} saved successfully`);
@@ -888,7 +972,7 @@ class SQLiteService {
           updated_at: chatRow.updated_at,
           deleted_at: chatRow.deleted_at,
           unread_count: chatRow.unread_count,
-          other_user: otherUser,
+          other_user: otherUser!,
           last_message: lastMessage,
           pivot: pivot
         };
@@ -951,7 +1035,7 @@ class SQLiteService {
         updated_at: chatRow.updated_at,
         deleted_at: chatRow.deleted_at,
         unread_count: chatRow.unread_count,
-        other_user: otherUser,
+        other_user: otherUser!,
         last_message: lastMessage,
         pivot: pivot
       };
@@ -1020,7 +1104,7 @@ class SQLiteService {
         two_factor_enabled: userRow.two_factor_enabled === 1,
         last_login_at: userRow.last_login_at,
         pivot: pivot,
-        profile: profile,
+        profile: profile!,
         profile_photo: profilePhoto
       };
 
@@ -1132,7 +1216,7 @@ class SQLiteService {
    * @param chatId The ID of the chat
    * @returns A promise that resolves to the last message or null if not found
    */
-  private async getLastMessageForChat(chatId: number): Promise<Message | null> {
+  async getLastMessageForChat(chatId: number): Promise<Message | null> {
     if (!this.db) throw new Error('Database not initialized');
 
     try {
@@ -1163,6 +1247,8 @@ class SQLiteService {
         created_at: messageRow.created_at,
         updated_at: messageRow.updated_at,
         is_mine: messageRow.is_mine === 1,
+        is_read: messageRow.is_read === 1,
+        read_at: messageRow.read_at,
         sender: messageRow.sender_email ? {
           id: messageRow.sender_id,
           email: messageRow.sender_email
@@ -1186,7 +1272,8 @@ class SQLiteService {
 
     try {
       const messageRows = await this.db.getAllAsync<any>(`
-        SELECT * FROM messages WHERE chat_id = ? ORDER BY sent_at ASC
+        SELECT * FROM messages WHERE chat_id = ? AND deleted_at IS NULL 
+        ORDER BY sent_at DESC
       `, [chatId]);
 
       const messages: Message[] = messageRows.map(messageRow => ({
@@ -1207,6 +1294,8 @@ class SQLiteService {
         created_at: messageRow.created_at,
         updated_at: messageRow.updated_at,
         is_mine: messageRow.is_mine === 1,
+        is_read: messageRow.is_read === 1,
+        read_at: messageRow.read_at,
         sender: messageRow.sender_email ? {
           id: messageRow.sender_id,
           email: messageRow.sender_email
@@ -1248,7 +1337,7 @@ class SQLiteService {
    * Get messages before a specific message ID (for pagination)
    * @param chatId The chat ID
    * @param beforeMessageId The message ID to get messages before
-   * @param limit Number of messages to get
+   * @param limit Maximum number of messages to retrieve
    * @returns Array of messages
    */
   async getMessagesBeforeId(chatId: number, beforeMessageId: number, limit: number = 20): Promise<Message[]> {
@@ -1256,11 +1345,11 @@ class SQLiteService {
 
     try {
       const messages = await this.db.getAllAsync<any>(`
-      SELECT * FROM messages 
-      WHERE chat_id = ? AND id < ? AND deleted_at IS NULL 
-      ORDER BY sent_at DESC
-      LIMIT ?
-    `, [chatId, beforeMessageId, limit]);
+        SELECT * FROM messages 
+        WHERE chat_id = ? AND id < ? AND deleted_at IS NULL 
+        ORDER BY sent_at DESC
+        LIMIT ?
+      `, [chatId, beforeMessageId, limit]);
 
       return messages.map(msg => ({
         id: msg.id,
@@ -1280,11 +1369,16 @@ class SQLiteService {
         created_at: msg.created_at,
         updated_at: msg.updated_at,
         is_mine: msg.is_mine === 1,
-        sender: msg.sender_email ? { id: msg.sender_id, email: msg.sender_email } : undefined
-      })).reverse(); // Reverse to maintain chronological order
+        is_read: msg.is_read === 1,
+        read_at: msg.read_at,
+        sender: msg.sender_email ? {
+          id: msg.sender_id,
+          email: msg.sender_email
+        } : undefined
+      }));
     } catch (error) {
       console.error('Error getting messages before ID:', error);
-      return [];
+      throw error;
     }
   }
 
@@ -1350,10 +1444,89 @@ class SQLiteService {
     if (!this.db) throw new Error('Database not initialized');
 
     try {
-      await this.db.runAsync('UPDATE messages SET status = ? WHERE id = ?', [status, messageId]);
+      if (status === 'deleted') {
+        await this.db.runAsync(`
+          UPDATE messages 
+          SET status = ?, deleted_at = datetime('now', 'utc') 
+          WHERE id = ?
+        `, [status, messageId]);
+      } else {
+        await this.db.runAsync(`
+          UPDATE messages 
+          SET status = ?, updated_at = datetime('now', 'utc') 
+          WHERE id = ?
+        `, [status, messageId]);
+      }
       console.log(`Message ${messageId} status updated to ${status}`);
     } catch (error) {
       console.error('Error updating message status:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update message content (for edit operations)
+   * @param messageId The message ID to update
+   * @param newContent The new content
+   */
+  async updateMessageContent(messageId: number, newContent: string): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.runAsync(`
+        UPDATE messages 
+        SET content = ?, is_edited = 1, edited_at = datetime('now', 'utc'), updated_at = datetime('now', 'utc')
+        WHERE id = ?
+      `, [newContent, messageId]);
+      console.log(`Message ${messageId} content updated`);
+    } catch (error) {
+      console.error('Error updating message content:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get message by ID
+   * @param messageId The message ID
+   * @returns Message or null if not found
+   */
+  async getMessageById(messageId: number): Promise<Message | null> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const msg = await this.db.getFirstAsync<any>(`
+        SELECT * FROM messages WHERE id = ? AND deleted_at IS NULL
+      `, [messageId]);
+
+      if (!msg) return null;
+
+      return {
+        id: msg.id,
+        chat_id: msg.chat_id,
+        sender_id: msg.sender_id,
+        reply_to_message_id: msg.reply_to_message_id,
+        content: msg.content,
+        message_type: msg.message_type,
+        media_data: msg.media_data ? JSON.parse(msg.media_data) : null,
+        media_url: msg.media_url,
+        thumbnail_url: msg.thumbnail_url,
+        status: msg.status,
+        is_edited: msg.is_edited === 1,
+        edited_at: msg.edited_at,
+        sent_at: msg.sent_at,
+        deleted_at: msg.deleted_at,
+        created_at: msg.created_at,
+        updated_at: msg.updated_at,
+        is_mine: msg.is_mine === 1,
+        is_read: msg.is_read === 1,
+        read_at: msg.read_at,
+        sender: msg.sender_email ? {
+          id: msg.sender_id,
+          email: msg.sender_email
+        } : undefined
+      };
+    } catch (error) {
+      console.error('Error getting message by ID:', error);
       throw error;
     }
   }
@@ -1427,6 +1600,198 @@ class SQLiteService {
       console.log('Database cleared and closed successfully');
     } catch (error) {
       console.error('Error clearing database on logout:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update a chat's last message
+   * @param chatId The chat ID
+   * @param message The new last message
+   */
+  async updateChatLastMessage(chatId: number, message: Message): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      // First save the message
+      await this.saveMessage(message);
+      
+      // Then update the chat's last_activity_at
+      const timestamp = message.sent_at || message.created_at || new Date().toISOString();
+      await this.db.runAsync(`
+        UPDATE chats 
+        SET last_activity_at = ?, updated_at = datetime('now', 'utc')
+        WHERE id = ?
+      `, [timestamp, chatId]);
+      
+      console.log(`Updated last message for chat ${chatId}`);
+    } catch (error) {
+      console.error('Error updating chat last message:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Increment unread count for a chat
+   * @param chatId The chat ID
+   */
+  async incrementChatUnreadCount(chatId: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.runAsync(`
+        UPDATE chats 
+        SET unread_count = unread_count + 1, updated_at = datetime('now', 'utc')
+        WHERE id = ?
+      `, [chatId]);
+      
+      console.log(`Incremented unread count for chat ${chatId}`);
+    } catch (error) {
+      console.error('Error incrementing chat unread count:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Mark a chat as read (reset unread count)
+   * @param chatId The chat ID
+   */
+  async markChatAsRead(chatId: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.runAsync(`
+        UPDATE chats 
+        SET unread_count = 0, updated_at = datetime('now', 'utc')
+        WHERE id = ?
+      `, [chatId]);
+      
+      console.log(`Marked chat ${chatId} as read`);
+    } catch (error) {
+      console.error('Error marking chat as read:', error);
+      throw error;
+    }
+  }
+
+  // Force database reset and migration
+  async resetDatabase(): Promise<void> {
+    try {
+      console.log('Resetting database...');
+      
+      // Close the database if it's open
+      if (this.db) {
+        await this.db.closeAsync();
+        this.db = null;
+      }
+      
+      // Delete the database file
+      const dbPath = `${FileSystem.documentDirectory}SQLite/yoryor_chats.db`;
+      try {
+        await FileSystem.deleteAsync(dbPath);
+        console.log('Deleted old database file');
+      } catch (error) {
+        console.log('Database file not found or already deleted');
+      }
+      
+      // Reinitialize the database
+      await this.initDatabase();
+      console.log('Database reset completed');
+    } catch (error) {
+      console.error('Error resetting database:', error);
+      throw error;
+    }
+  }
+
+  // Force add missing columns
+  public async forceAddMissingColumns(): Promise<void> {
+    if (!this.db) {
+      console.log('Database not initialized, initializing first...');
+      await this.initDatabase();
+      return;
+    }
+
+    try {
+      console.log('Checking for missing columns...');
+      
+      // Check if columns exist
+      const tableInfo = await this.db.getAllAsync<any>(`
+        PRAGMA table_info(messages)
+      `);
+      
+      const hasIsRead = tableInfo.some((col: any) => col.name === 'is_read');
+      const hasReadAt = tableInfo.some((col: any) => col.name === 'read_at');
+      
+      console.log('Current columns:', tableInfo.map((col: any) => col.name));
+      console.log('Has is_read:', hasIsRead);
+      console.log('Has read_at:', hasReadAt);
+      
+      if (!hasIsRead) {
+        console.log('Adding is_read column...');
+        await this.db.execAsync(`
+          ALTER TABLE messages ADD COLUMN is_read INTEGER DEFAULT 0
+        `);
+        console.log('Successfully added is_read column');
+      }
+      
+      if (!hasReadAt) {
+        console.log('Adding read_at column...');
+        await this.db.execAsync(`
+          ALTER TABLE messages ADD COLUMN read_at TEXT
+        `);
+        console.log('Successfully added read_at column');
+      }
+      
+      console.log('All required columns are present');
+    } catch (error) {
+      console.error('Error adding missing columns:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get initial messages for a chat with pagination limit (for consistency with API)
+   * @param chatId The chat ID to get messages for
+   * @param limit Maximum number of messages to retrieve
+   * @returns Array of messages ordered by newest first
+   */
+  async getInitialMessagesByChatId(chatId: number, limit: number = 20): Promise<Message[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const messages = await this.db.getAllAsync<any>(`
+        SELECT * FROM messages 
+        WHERE chat_id = ? AND deleted_at IS NULL 
+        ORDER BY sent_at DESC
+        LIMIT ?
+      `, [chatId, limit]);
+
+      return messages.map(msg => ({
+        id: msg.id,
+        chat_id: msg.chat_id,
+        sender_id: msg.sender_id,
+        reply_to_message_id: msg.reply_to_message_id,
+        content: msg.content,
+        message_type: msg.message_type,
+        media_data: msg.media_data ? JSON.parse(msg.media_data) : null,
+        media_url: msg.media_url,
+        thumbnail_url: msg.thumbnail_url,
+        status: msg.status,
+        is_edited: msg.is_edited === 1,
+        edited_at: msg.edited_at,
+        sent_at: msg.sent_at,
+        deleted_at: msg.deleted_at,
+        created_at: msg.created_at,
+        updated_at: msg.updated_at,
+        is_mine: msg.is_mine === 1,
+        is_read: msg.is_read === 1,
+        read_at: msg.read_at,
+        sender: msg.sender_email ? {
+          id: msg.sender_id,
+          email: msg.sender_email
+        } : undefined
+      }));
+    } catch (error) {
+      console.error('Error getting initial messages by chat ID:', error);
       throw error;
     }
   }

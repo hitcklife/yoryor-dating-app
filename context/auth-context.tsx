@@ -1,59 +1,12 @@
 import React, { createContext, useContext, useState, useEffect } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import axios from "axios";
+import { apiClient, User, RegistrationData } from "../services/api-client";
 import sqliteService from "../services/sqlite-service";
-
-type User = {
-    id: number;
-    email: string | null;
-    phone: string;
-    google_id: string | null;
-    facebook_id: string | null;
-    email_verified_at: string | null;
-    phone_verified_at: string | null;
-    disabled_at: string | null;
-    registration_completed: boolean;
-    profile_photo_path: string | null;
-    created_at: string;
-    updated_at: string;
-    two_factor_enabled: boolean;
-    profile: any | null;
-    preference: any | null;
-    photos?: any[];
-};
 
 type HomeStats = {
     unread_messages_count: number;
     new_likes_count: number;
     matches_count: number;
-};
-
-type PhotoData = {
-    id: string;
-    uri: string;
-    isMain: boolean;
-    isPrivate: boolean;
-};
-
-type RegistrationData = {
-    gender: string;
-    firstName: string;
-    lastName: string;
-    dateOfBirth: string;
-    age: string;
-    email: string;
-    status: string;
-    occupation: string;
-    profession: string;
-    bio?: string;
-    interests?: string;
-    country: string;
-    countryCode: string;
-    state?: string;
-    region?: string;
-    city: string;
-    lookingFor: string;
-    photos: PhotoData[];
 };
 
 type AuthContextType = {
@@ -70,8 +23,6 @@ type AuthContextType = {
     fetchHomeStats: () => Promise<HomeStats | null>;
 };
 
-const API_BASE_URL = 'https://incredibly-evident-hornet.ngrok-free.app/';
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
@@ -82,16 +33,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [isLoading, setIsLoading] = useState(true);
 
     useEffect(() => {
-        axios.defaults.baseURL = API_BASE_URL;
-    }, []);
-
-    useEffect(() => {
         const checkAuthStatus = async () => {
             try {
                 setIsLoading(true);
                 const token = await AsyncStorage.getItem('auth_token');
                 if (token) {
-                    axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+                    // Set the token in api client
+                    await apiClient.setAuthToken(token);
 
                     const userData = await AsyncStorage.getItem('user_data');
                     if (userData) {
@@ -119,11 +67,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const sendOTP = async (phone: string): Promise<boolean> => {
         try {
-            const response = await axios.post('/api/v1/auth/authenticate', {
-                phone
-            });
-
-            return response.data.status === 'success' && response.data.data.otp_sent;
+            const response = await apiClient.auth.sendOTP(phone);
+            return response.status === 'success' && response.data?.otp_sent;
         } catch (error) {
             console.error('Error sending OTP:', error);
             throw error;
@@ -132,13 +77,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const verifyOTP = async (phone: string, otp: string): Promise<{ success: boolean, userData?: User }> => {
         try {
-            const response = await axios.post('/api/v1/auth/authenticate', {
-                phone,
-                otp
-            });
+            const response = await apiClient.auth.verifyOTP(phone, otp);
 
-            if (response.data.status === 'success' && response.data.data.authenticated) {
-                let { token, user } = response.data.data;
+            if (response.status === 'success' && response.data?.authenticated) {
+                let { token, user } = response.data;
 
                 // Handle nested user object if present
                 if (user && typeof user === 'object' && user.status === 'success') {
@@ -149,8 +91,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
                 // Store token and user data
                 await login(token, user);
-
-                // Fetch home stats after successful login
 
                 return { success: true, userData: user };
             }
@@ -164,83 +104,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const completeRegistration = async (data: RegistrationData): Promise<{ success: boolean, userData?: User }> => {
         try {
-            const formData = new FormData();
+            const response = await apiClient.auth.completeRegistration(data);
 
-            // Add user data to form data
-            formData.append('gender', data.gender);
-            formData.append('firstName', data.firstName);
-            formData.append('lastName', data.lastName);
-            formData.append('dateOfBirth', data.dateOfBirth);
-            formData.append('age', data.age);
-            formData.append('email', data.email);
-            formData.append('status', data.status);
-            formData.append('occupation', data.occupation);
-            formData.append('lookingFor', data.lookingFor);
-            formData.append('profession', data.profession);
-
-            if (data.bio) formData.append('bio', data.bio);
-
-            if (data.interests) {
-                const interestsArray = data.interests.split(',');
-                interestsArray.forEach((interest, index) => {
-                    formData.append(`interests[${index}]`, interest.trim());
-                });
-            }
-
-            // Add location data
-            formData.append('country', data.country);
-            formData.append('countryCode', data.countryCode);
-            if (data.state) formData.append('state', data.state);
-            if (data.region) formData.append('region', data.region);
-            formData.append('city', data.city);
-
-            // Find main photo index
-            const mainPhotoIndex = data.photos.findIndex(photo => photo.isMain);
-            if (mainPhotoIndex !== -1) {
-                formData.append('mainPhotoIndex', mainPhotoIndex.toString());
-            }
-
-            // Add photos to form data
-            data.photos.forEach((photo, index) => {
-                if (!photo.uri) {
-                    console.error(`Photo ${index} has invalid URI: ${photo.uri}`);
-                    return;
-                }
-
-                const uriParts = photo.uri.split('/');
-                const fileName = uriParts[uriParts.length - 1] || `photo_${index}.jpg`;
-
-                const fileObject = {
-                    uri: photo.uri,
-                    name: fileName,
-                    type: 'image/jpeg',
-                } as any;
-
-                formData.append(`photos[${index}]`, fileObject);
-                formData.append(`photoMeta[${index}][isMain]`, photo.isMain ? 'true' : 'false');
-                formData.append(`photoMeta[${index}][is_private]`, photo.isPrivate ? 'true' : 'false');
-            });
-
-            const response = await axios.post(
-                '/api/v1/auth/complete-registration',
-                formData,
-                {
-                    headers: {
-                        'Content-Type': 'multipart/form-data',
-                        'Accept': 'application/json',
-                    },
-                    transformRequest: (data, headers) => data,
-                }
-            );
-
-            if (response.data.status === 'success') {
-                const userData = response.data.data.user;
+            if (response.status === 'success') {
+                const userData = response.data?.user;
                 const updatedUser = {
                     ...userData,
                     registration_completed: true
                 };
 
-                await login(response.data.data.token || '', updatedUser);
+                await login(response.data?.token || '', updatedUser);
                 return { success: true, userData: updatedUser };
             }
 
@@ -259,12 +132,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 return null;
             }
 
-            axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+            // Ensure api client has the token
+            await apiClient.setAuthToken(token);
 
-            const response = await axios.get('/api/v1/home');
+            const response = await apiClient.auth.getHomeStats();
 
-            if (response.data.status === 'success' && response.data.data.stats) {
-                const newStats = response.data.data.stats;
+            if (response.status === 'success' && response.data?.stats) {
+                const newStats = response.data.stats;
                 setStats(newStats);
                 return newStats;
             }
@@ -272,8 +146,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             return null;
         } catch (error) {
             console.error('Error fetching home stats:', error);
-            // @ts-ignore
-            if (error.response?.status === 401) {
+            // Check if it's an authentication error
+            if (error instanceof Error && error.message.includes('Session expired')) {
                 console.log('Authentication failed, logging out...');
                 await logout();
             }
@@ -286,7 +160,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await AsyncStorage.setItem('auth_token', token);
             await AsyncStorage.setItem('user_data', JSON.stringify(userData));
 
-            axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
+            // Set token in api client
+            await apiClient.setAuthToken(token);
 
             setUser(userData);
             setIsRegistrationCompleted(userData.registration_completed);
@@ -299,16 +174,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const logout = async () => {
         try {
-            try {
-                await axios.post('/api/v1/auth/logout');
-            } catch (logoutError) {
-                console.error('Error calling logout API:', logoutError);
-            }
+            // Use api client logout which handles both API call and token clearing
+            await apiClient.auth.logout();
 
-            await AsyncStorage.removeItem('auth_token');
             await AsyncStorage.removeItem('user_data');
-
-            delete axios.defaults.headers.common['Authorization'];
 
             // Clear and delete the local SQLite database
             try {

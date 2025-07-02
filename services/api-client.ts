@@ -9,8 +9,55 @@ export interface ApiResponse<T = any> {
     data?: T;
 }
 
+export interface User {
+    id: number;
+    email: string | null;
+    phone: string;
+    google_id: string | null;
+    facebook_id: string | null;
+    email_verified_at: string | null;
+    phone_verified_at: string | null;
+    disabled_at: string | null;
+    registration_completed: boolean;
+    profile_photo_path: string | null;
+    created_at: string;
+    updated_at: string;
+    two_factor_enabled: boolean;
+    profile: any | null;
+    preference: any | null;
+    photos?: any[];
+}
+
+export interface PhotoData {
+    id: string;
+    uri: string;
+    isMain: boolean;
+    isPrivate: boolean;
+}
+
+export interface RegistrationData {
+    gender: string;
+    firstName: string;
+    lastName: string;
+    dateOfBirth: string;
+    age: string;
+    email: string;
+    status: string;
+    occupation: string;
+    profession: string;
+    bio?: string;
+    interests?: string;
+    country: string;
+    countryCode: string;
+    state?: string;
+    region?: string;
+    city: string;
+    lookingFor: string;
+    photos: PhotoData[];
+}
+
 class ApiClient {
-    private client: AxiosInstance;
+    private client!: AxiosInstance;
     private authToken: string | null = null;
     private requestQueue: Array<() => Promise<any>> = [];
     private isRefreshingToken = false;
@@ -66,16 +113,13 @@ class ApiClient {
         // Set up response interceptor for error handling
         this.client.interceptors.response.use(
             (response) => {
-                // Transform all responses to standard format
-                return this.transformResponse(response);
+                // Keep the original response structure for successful requests
+                return response;
             },
             async (error) => {
                 // Handle network errors
                 if (!error.response) {
-                    return {
-                        status: 'error',
-                        message: 'Network error. Please check your connection.'
-                    };
+                    throw new Error('Network error. Please check your connection.');
                 }
 
                 // Handle expired token
@@ -90,19 +134,12 @@ class ApiClient {
                     } catch (refreshError) {
                         // If refresh fails, log out user
                         await this.logoutUser();
-                        return {
-                            status: 'error',
-                            message: 'Session expired. Please log in again.'
-                        };
+                        throw new Error('Session expired. Please log in again.');
                     }
                 }
 
-                // Handle other errors
-                return {
-                    status: 'error',
-                    message: error.response.data.message || 'An error occurred',
-                    data: error.response.data
-                };
+                // Re-throw the error to be handled by individual methods
+                throw error;
             }
         );
 
@@ -112,7 +149,7 @@ class ApiClient {
     /**
      * Transform response to standard format
      */
-    private transformResponse(response: AxiosResponse): ApiResponse {
+    private transformResponse<T>(response: AxiosResponse): ApiResponse<T> {
         // If response already has status field, use it
         if (response.data && 'status' in response.data) {
             return response.data;
@@ -238,7 +275,8 @@ class ApiClient {
      */
     public async get<T = any>(url: string, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
         try {
-            return await this.client.get(url, config);
+            const response = await this.client.get(url, config);
+            return this.transformResponse<T>(response);
         } catch (error) {
             if (axios.isAxiosError(error)) {
                 return {
@@ -260,7 +298,8 @@ class ApiClient {
      */
     public async post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
         try {
-            return await this.client.post(url, data, config);
+            const response = await this.client.post(url, data, config);
+            return this.transformResponse<T>(response);
         } catch (error) {
             if (axios.isAxiosError(error)) {
                 return {
@@ -282,7 +321,8 @@ class ApiClient {
      */
     public async put<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
         try {
-            return await this.client.put(url, data, config);
+            const response = await this.client.put(url, data, config);
+            return this.transformResponse<T>(response);
         } catch (error) {
             if (axios.isAxiosError(error)) {
                 return {
@@ -304,7 +344,8 @@ class ApiClient {
      */
     public async patch<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
         try {
-            return await this.client.patch(url, data, config);
+            const response = await this.client.patch(url, data, config);
+            return this.transformResponse<T>(response);
         } catch (error) {
             if (axios.isAxiosError(error)) {
                 return {
@@ -326,7 +367,8 @@ class ApiClient {
      */
     public async delete<T = any>(url: string, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
         try {
-            return await this.client.delete(url, config);
+            const response = await this.client.delete(url, config);
+            return this.transformResponse<T>(response);
         } catch (error) {
             if (axios.isAxiosError(error)) {
                 return {
@@ -384,7 +426,7 @@ class ApiClient {
                 }
             });
 
-            return response;
+            return this.transformResponse<T>(response);
         } catch (error) {
             if (axios.isAxiosError(error)) {
                 return {
@@ -428,7 +470,7 @@ class ApiClient {
                         Authorization: `Bearer ${this.authToken}`
                     } : undefined
                 },
-                progress => {
+                (progress: any) => {
                     if (onProgress && progress.totalBytesExpectedToWrite > 0) {
                         const progressPercent = progress.totalBytesWritten / progress.totalBytesExpectedToWrite * 100;
                         onProgress(progressPercent);
@@ -501,6 +543,95 @@ class ApiClient {
      * Authentication endpoints
      */
     public auth = {
+        sendOTP: async (phone: string) => {
+            return this.post('/api/v1/auth/authenticate', { phone });
+        },
+
+        verifyOTP: async (phone: string, otp: string) => {
+            return this.post('/api/v1/auth/authenticate', { phone, otp });
+        },
+
+        completeRegistration: async (data: RegistrationData) => {
+            const formData = new FormData();
+
+            // Add user data to form data
+            formData.append('gender', data.gender);
+            formData.append('firstName', data.firstName);
+            formData.append('lastName', data.lastName);
+            formData.append('dateOfBirth', data.dateOfBirth);
+            formData.append('age', data.age);
+            formData.append('email', data.email);
+            formData.append('status', data.status);
+            formData.append('occupation', data.occupation);
+            formData.append('lookingFor', data.lookingFor);
+            formData.append('profession', data.profession);
+
+            if (data.bio) formData.append('bio', data.bio);
+
+            if (data.interests) {
+                const interestsArray = data.interests.split(',');
+                interestsArray.forEach((interest, index) => {
+                    formData.append(`interests[${index}]`, interest.trim());
+                });
+            }
+
+            // Add location data
+            formData.append('country', data.country);
+            formData.append('countryCode', data.countryCode);
+            if (data.state) formData.append('state', data.state);
+            if (data.region) formData.append('region', data.region);
+            formData.append('city', data.city);
+
+            // Find main photo index
+            const mainPhotoIndex = data.photos.findIndex(photo => photo.isMain);
+            if (mainPhotoIndex !== -1) {
+                formData.append('mainPhotoIndex', mainPhotoIndex.toString());
+            }
+
+            // Add photos to form data
+            data.photos.forEach((photo, index) => {
+                if (!photo.uri) {
+                    console.error(`Photo ${index} has invalid URI: ${photo.uri}`);
+                    return;
+                }
+
+                const uriParts = photo.uri.split('/');
+                const fileName = uriParts[uriParts.length - 1] || `photo_${index}.jpg`;
+
+                const fileObject = {
+                    uri: photo.uri,
+                    name: fileName,
+                    type: 'image/jpeg',
+                } as any;
+
+                formData.append(`photos[${index}]`, fileObject);
+                formData.append(`photoMeta[${index}][isMain]`, photo.isMain ? 'true' : 'false');
+                formData.append(`photoMeta[${index}][is_private]`, photo.isPrivate ? 'true' : 'false');
+            });
+
+            return this.post('/api/v1/auth/complete-registration', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                    'Accept': 'application/json',
+                },
+                transformRequest: (data, headers) => data,
+            });
+        },
+
+        getHomeStats: async () => {
+            return this.get('/api/v1/home');
+        },
+
+        logout: async () => {
+            try {
+                await this.post('/api/v1/auth/logout');
+            } catch (error) {
+                console.error('Error calling logout API:', error);
+            } finally {
+                await this.clearAuthToken();
+            }
+        },
+
         refresh: async () => {
             const refreshToken = await AsyncStorage.getItem('refresh_token');
             return this.post('/auth/refresh', { refresh_token: refreshToken });

@@ -17,12 +17,13 @@ import {
   Spinner,
   HStack,
   Input, InputField, Avatar, AvatarImage,
-  Button,
+  Button, VStack,
 } from "@gluestack-ui/themed";
-import { chatsService, Chat, Message, getProfilePhotoUrl, getCurrentUserId } from "@/services/chats-service";
+import { chatsService, Chat, Message, getProfilePhotoUrl, getCurrentUserId, initializeChatsService } from "@/services/chats-service";
 import { sqliteService } from "@/services/sqlite-service";
 import { webSocketService } from "@/services/websocket-service";
-import { agoraService } from "@/services/agora-service";
+import { videoSDKService } from "@/services/videosdk-service";
+import { CONFIG } from "@/services/config";
 import NetInfo from "@react-native-community/netinfo";
 import { format, formatDistanceToNow } from "date-fns";
 import { debounce } from 'lodash';
@@ -30,6 +31,7 @@ import { useAudioRecorder, useAudioPlayer, AudioModule, RecordingPresets } from 
 import * as ImagePicker from 'expo-image-picker';
 import { Image } from "@gluestack-ui/themed";
 import {Ionicons} from "@expo/vector-icons";
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Import custom components
 import ChatHeader from "@/components/ui/chat/ChatHeader";
@@ -37,7 +39,6 @@ import MessageItem from "@/components/ui/chat/MessageItem";
 import MessageInput from "@/components/ui/chat/MessageInput";
 import ChatOptions from "@/components/ui/chat/ChatOptions";
 import CallScreen from "@/components/ui/chat/CallScreen";
-import { TypingIndicator } from "@/components/ui/chat/TypingIndicator";
 
 export default function ChatScreen() {
   // Navigation
@@ -57,10 +58,12 @@ export default function ChatScreen() {
   const [error, setError] = useState<string | null>(null);
   const [chat, setChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [isLoadingFromAPI, setIsLoadingFromAPI] = useState(false);
 
   // Pagination states
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
-  const [oldestMessageId, setOldestMessageId] = useState<number | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
 
   // UI states
   const [optionsVisible, setOptionsVisible] = useState(false);
@@ -76,6 +79,11 @@ export default function ChatScreen() {
   const [chatChannel, setChatChannel] = useState<any>(null);
   const [callVisible, setCallVisible] = useState(false);
   const [isVideoCall, setIsVideoCall] = useState(false);
+
+  // Message interaction states
+  const [editingMessage, setEditingMessage] = useState<Message | null>(null);
+  const [replyingToMessage, setReplyingToMessage] = useState<Message | null>(null);
+  const [editText, setEditText] = useState("");
 
   // Voice recording state using expo-audio hook
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
@@ -104,6 +112,7 @@ export default function ChatScreen() {
 
   // Component mounted state for cleanup
   const isMounted = useRef(true);
+  const chatRef = useRef<Chat | null>(null);
 
   // AUDIO: Timer for recording duration
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -117,7 +126,70 @@ export default function ChatScreen() {
   } | null>(null);
   const [showFilePreview, setShowFilePreview] = useState(false);
 
-  // ---- Data fetching functions ----
+  // Merge messages by ID, preserving local data when API data is same
+  const mergeMessagesByID = useCallback((localMessages: Message[], apiMessages: Message[]): Message[] => {
+    const messageMap = new Map<number, Message>();
+    
+    // First add local messages (they preserve the correct is_mine state and status)
+    localMessages.forEach(msg => {
+      messageMap.set(msg.id, msg);
+    });
+    
+    // Then update with API messages, but preserve critical local properties
+    apiMessages.forEach(apiMsg => {
+      const localMsg = messageMap.get(apiMsg.id);
+      if (localMsg) {
+        // Merge API data with local properties that shouldn't change to prevent UI jumps
+        messageMap.set(apiMsg.id, {
+          ...apiMsg,
+          // For sent messages, prioritize API is_mine if it's true
+          // For received messages, keep local is_mine to prevent left/right jumping
+          is_mine: apiMsg.is_mine === true ? true : localMsg.is_mine,
+          // If local message is in 'sending' state, keep that until API confirms
+          status: localMsg.status === 'sending' ? localMsg.status : apiMsg.status,
+        });
+      } else {
+        // New message from API
+        messageMap.set(apiMsg.id, apiMsg);
+      }
+    });
+    
+    // Convert back to array and sort by newest first (using sent_at for better consistency)
+    return Array.from(messageMap.values()).sort((a, b) => {
+      const timeA = new Date(a.sent_at || a.created_at).getTime();
+      const timeB = new Date(b.sent_at || b.created_at).getTime();
+      return timeB - timeA;
+    });
+  }, []);
+
+  // Load local messages first, then fetch from API
+  const loadLocalMessages = useCallback(async () => {
+    if (!isMounted.current || !chatId) return;
+
+    try {
+      console.log('Loading local messages for chat ID:', chatId);
+      
+      // Load initial local messages from SQLite with same limit as API for consistency
+      const localMessages = await sqliteService.getInitialMessagesByChatId(chatId, CONFIG.APP.chatMessagesPageSize);
+      console.log('Loaded local messages count:', localMessages.length);
+      
+      if (localMessages.length > 0 && isMounted.current) {
+        // Get current user ID to ensure correct is_mine property
+        const currentUserId = await getCurrentUserId();
+        
+        // Ensure messages have correct is_mine property
+        const messagesWithOwnership = localMessages.map(msg => ({
+          ...msg,
+          is_mine: msg.sender_id === currentUserId
+        }));
+
+        setMessages(messagesWithOwnership);
+        console.log('Set local messages in state:', messagesWithOwnership.length);
+      }
+    } catch (error) {
+      console.error('Error loading local messages:', error);
+    }
+  }, [chatId]);
 
   // Fetch chat data with optimized pagination for inverted list
   const fetchChatData = useCallback(async () => {
@@ -126,48 +198,73 @@ export default function ChatScreen() {
     // Check if chatId is valid
     if (!chatId) {
       setError('Invalid chat ID. Please go back and try again.');
-      setLoading(false);
       return;
     }
 
-    setLoading(true);
     setError(null);
 
     try {
-      const response = await chatsService.getChatDetails(chatId);
+      console.log('Fetching chat data for chat:', chatId);
+      // Always start from page 1 for initial load
+      const response = await chatsService.getChatDetails(chatId, 1);
 
       if (response?.data && isMounted.current) {
-        setChat(response.data.chat);
+        const { chat: apiChat, messages: apiMessages, pagination } = response.data;
+        
+        // Always update chat info from API as it's more current
+        setChat(apiChat);
 
-        // Sort messages by ascending time (oldest first)
-        const latestMessages = response.data.messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-        setMessages(latestMessages);
+        // Handle message merging more carefully
+        if (apiMessages && apiMessages.length > 0) {
+          setMessages(prevMessages => {
+            // If we have local messages, merge them intelligently
+            if (prevMessages.length > 0) {
+              const merged = mergeMessagesByID(prevMessages, apiMessages);
+              console.log('Merged messages:', { local: prevMessages.length, api: apiMessages.length, merged: merged.length });
+              return merged;
+            }
+            // Otherwise, just use API messages
+            console.log('Using API messages directly:', apiMessages.length);
+            return apiMessages;
+          });
 
-        // Set pagination info - with inverted list, oldest message is the last one in the array
-        setHasMoreMessages(response.data.pagination?.has_more || false);
-        setOldestMessageId(
-          response.data.pagination?.oldest_message_id ||
-          (latestMessages.length > 0 ? latestMessages[latestMessages.length - 1]?.id : null)
-        );
-
-        // No need to manually scroll to bottom with inverted list
-        // The newest messages will automatically be visible at the bottom
+          // Update pagination state
+          if (pagination) {
+            const newCurrentPage = pagination.current_page || 1;
+            const newTotalPages = pagination.last_page || 1;
+            const newHasMore = newCurrentPage < newTotalPages;
+            
+            console.log('Pagination update:', { 
+              newCurrentPage, 
+              newTotalPages, 
+              newHasMore,
+              messagesLoaded: apiMessages.length 
+            });
+            
+            setCurrentPage(newCurrentPage);
+            setTotalPages(newTotalPages);
+            setHasMoreMessages(newHasMore);
+          }
+        } else {
+          // No messages from API, reset pagination
+          setCurrentPage(1);
+          setTotalPages(1);
+          setHasMoreMessages(false);
+        }
       }
     } catch (error) {
-      console.error('Error loading chat details:', error);
-      if (isMounted.current) {
-        setError('Failed to load chat. Please try again.');
-      }
+      console.error('Error fetching chat data:', error);
+      setError('Failed to load chat. Please check your connection and try again.');
     } finally {
       if (isMounted.current) {
-        setLoading(false);
+        setIsLoadingFromAPI(false);
       }
     }
   }, [chatId]);
 
   // Load older messages when scrolling up - optimized for inverted list
   const loadMoreMessages = useCallback(async () => {
-    if (loadingMore || !hasMoreMessages || !oldestMessageId || !isMounted.current) {
+    if (loadingMore || !hasMoreMessages || currentPage >= totalPages || !isMounted.current) {
       return;
     }
 
@@ -178,18 +275,37 @@ export default function ChatScreen() {
     }
 
     setLoadingMore(true);
+    
     try {
-      const response = await chatsService.loadMoreMessages(chatId, oldestMessageId);
+      const response = await chatsService.loadMoreMessages(chatId, currentPage);
 
       if (response?.data?.messages?.length > 0 && isMounted.current) {
         const newMessages = response.data.messages;
 
-        // Prepend older messages at the start
-        setMessages(prevMessages => [...newMessages, ...prevMessages]);
+        // Merge older messages with existing ones, preventing duplicates
+        setMessages(prevMessages => {
+          const mergedMessages = mergeMessagesByID(prevMessages, newMessages);
+          return mergedMessages;
+        });
 
-        // Update pagination info
-        setHasMoreMessages(response.data.pagination?.has_more || false);
-        setOldestMessageId(response.data.pagination?.oldest_message_id || newMessages[newMessages.length - 1]?.id);
+        // Update pagination info from the response
+        if (response.data.pagination) {
+          const pagination = response.data.pagination;
+          const newCurrentPage = pagination.current_page || currentPage + 1;
+          const newTotalPages = pagination.last_page || totalPages;
+          const newHasMore = newCurrentPage < newTotalPages;
+          
+          console.log('Pagination update:', { 
+            newCurrentPage, 
+            newTotalPages, 
+            newHasMore,
+            messagesLoaded: newMessages.length 
+          });
+          
+          setCurrentPage(newCurrentPage);
+          setTotalPages(newTotalPages);
+          setHasMoreMessages(newHasMore);
+        }
       } else if (isMounted.current) {
         setHasMoreMessages(false);
       }
@@ -203,7 +319,7 @@ export default function ChatScreen() {
         setLoadingMore(false);
       }
     }
-  }, [chatId, loadingMore, hasMoreMessages, oldestMessageId]);
+  }, [chatId, loadingMore, hasMoreMessages, currentPage, totalPages, mergeMessagesByID]);
 
   // ---- WebSocket & Chat connection management ----
 
@@ -220,7 +336,7 @@ export default function ChatScreen() {
     initializeWebSocket();
   }, []);
 
-  // Subscribe to chat channel
+  // Subscribe to chat channel with enhanced event handling
   useEffect(() => {
     if (!chatId) return;
     let channel: any = null;
@@ -228,33 +344,80 @@ export default function ChatScreen() {
       try {
         await webSocketService.initialize();
         if (!isMounted.current) return;
+
         channel = webSocketService.subscribeToChat(
           chatId,
           // onMessage
-          (newMessage: Message) => {
+          async (newMessage: Message) => {
             if (!isMounted.current) return;
-            if (!newMessage.is_mine) {
-              setMessages(prevMessages => {
-                const messageExists = prevMessages.some(msg => msg.id === newMessage.id);
-                if (messageExists) return prevMessages;
-                return [newMessage, ...prevMessages];
-              });
+            
+            // Update chat list with new message
+            try {
+              await chatsService.updateChatWithNewMessage(chatId, newMessage);
+            } catch (error) {
+              console.error('Error updating chat with new message:', error);
             }
+            
+            setMessages(prevMessages => {
+              const messageExists = prevMessages.some(msg => msg.id === newMessage.id);
+              if (messageExists) return prevMessages;
+              
+              // Use merge strategy to add new message
+              const newMessages = mergeMessagesByID(prevMessages, [newMessage]);
+              
+              // Scroll to bottom with animation for incoming messages (if not from me)
+              if (!newMessage.is_mine) {
+                setTimeout(() => {
+                  if (isMounted.current && flatListRef.current) {
+                    flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+                  }
+                }, 50);
+              }
+              
+              return newMessages;
+            });
           },
           // onTyping
           (user: any) => {
             if (!isMounted.current) return;
-            // Only show typing if it's from the other user
-            if (user && chat && chat.other_user && user.id === chat.other_user.id) {
-              setIsTyping(true);
-              setTypingUser(user.name);
-              // Hide typing after 3 seconds
-              setTimeout(() => {
-                if (isMounted.current) {
-                  setIsTyping(false);
-                  setTypingUser(null);
-                }
-              }, 3000);
+            
+            const currentChat = chatRef.current;
+            
+            // Only show typing if it's from the other user and we have chat data
+            if (user && currentChat && currentChat.other_user) {
+              const typingUserId = user.user_id || user.id;
+              
+              if (typingUserId && typingUserId === currentChat.other_user.id) {
+                const userName = user.name || currentChat.other_user.profile?.first_name || 'User';
+                
+                setIsTyping(true);
+                setTypingUser(userName);
+                
+                // Hide typing after 3 seconds
+                setTimeout(() => {
+                  if (isMounted.current) {
+                    setIsTyping(false);
+                    setTypingUser(null);
+                  }
+                }, 3000);
+              }
+            }
+          },
+          // Additional callbacks for edit/delete events
+          {
+            onMessageEdited: (editedMessage: Message) => {
+              if (!isMounted.current) return;
+              setMessages(prevMessages =>
+                prevMessages.map(msg =>
+                  msg.id === editedMessage.id ? { ...msg, ...editedMessage } : msg
+                )
+              );
+            },
+            onMessageDeleted: (messageId: number) => {
+              if (!isMounted.current) return;
+              setMessages(prevMessages =>
+                prevMessages.filter(msg => msg.id !== messageId)
+              );
             }
           }
         );
@@ -276,27 +439,161 @@ export default function ChatScreen() {
         webSocketService.unsubscribeFromChat(chatId);
       }
     };
-  }, [chatId, chat]);
+  }, [chatId, mergeMessagesByID]);
 
   // Initial data loading
   useEffect(() => {
-    // Check if chatId is valid before fetching data
-    if (chatId) {
-      fetchChatData();
-    } else {
-      setError('Invalid chat ID. Please go back and try again.');
-      setLoading(false);
-    }
+    const initializeChat = async () => {
+      try {
+        console.log('Initializing chat with ID:', chatId);
+        
+        // Force database migration first
+        await initializeChatsService();
+        
+        // Check if chatId is valid before fetching data
+        if (chatId) {
+          console.log('Loading local messages for chat:', chatId);
+          
+          // Load local data first for immediate display
+          await loadLocalMessages();
+          
+          // Stop initial loading after local data is loaded
+          if (isMounted.current) {
+            setLoading(false);
+          }
+          
+          // Try to fetch fresh data from API in background
+          console.log('Fetching fresh chat data from API for chat:', chatId);
+          setIsLoadingFromAPI(true);
+          
+          try {
+            await fetchChatData();
+          } catch (apiError) {
+            console.warn('API call failed, using local data:', apiError);
+            // Don't fail the entire initialization if API fails
+          } finally {
+            // Always ensure loading from API is set to false
+            if (isMounted.current) {
+              setIsLoadingFromAPI(false);
+              console.log('Set isLoadingFromAPI to false after fetchChatData');
+            }
+          }
+          
+          console.log('Chat initialization completed');
+          
+          // Scroll to bottom after initial load to show latest messages
+          setTimeout(() => {
+            if (isMounted.current && flatListRef.current) {
+              flatListRef.current.scrollToOffset({ offset: 0, animated: false });
+            }
+          }, 100);
+        } else {
+          console.error('Invalid chat ID:', chatId);
+          setError('Invalid chat ID. Please go back and try again.');
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error('Error initializing chat:', error);
+        setError('Failed to load chat. Please try again.');
+        setLoading(false);
+        setIsLoadingFromAPI(false);
+      }
+    };
+
+    initializeChat();
 
     // Cleanup function
     return () => {
       isMounted.current = false;
     };
-  }, [fetchChatData, chatId]);
+  }, [chatId, loadLocalMessages, fetchChatData]);
 
-  // No need to scroll to bottom on initial load with inverted list
-  // The newest messages will automatically be visible at the bottom
-  // This effect has been removed as it's not needed with inverted list
+  // Update chat ref whenever chat state changes
+  useEffect(() => {
+    chatRef.current = chat;
+  }, [chat]);
+
+  // ---- Message Action Handlers ----
+
+  // Handle edit message
+  const handleEditMessage = useCallback((messageToEdit: Message) => {
+    if (!messageToEdit.is_mine || messageToEdit.message_type !== 'text') return;
+    setEditingMessage(messageToEdit);
+    setEditText(messageToEdit.content);
+  }, []);
+
+  // Handle delete message
+  const handleDeleteMessage = useCallback(async (messageId: number) => {
+    try {
+      if (!chatId) {
+        Alert.alert("Error", "Cannot delete message: Invalid chat ID");
+        return;
+      }
+
+      const response = await chatsService.deleteMessage(chatId, messageId);
+
+      if (response?.status === 'success') {
+        // Optimistically remove message from UI
+        setMessages(prevMessages =>
+          prevMessages.filter(msg => msg.id !== messageId)
+        );
+      } else {
+        Alert.alert("Error", "Failed to delete message. Please try again.");
+      }
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      Alert.alert("Error", "An error occurred while deleting the message.");
+    }
+  }, [chatId]);
+
+  // Handle reply to message
+  const handleReplyToMessage = useCallback((messageToReply: Message) => {
+    setReplyingToMessage(messageToReply);
+  }, []);
+
+  // Send edited message
+  const sendEditedMessage = useCallback(async () => {
+    if (!editingMessage || !editText.trim() || !chatId) return;
+
+    try {
+      const response = await chatsService.editMessage(chatId, editingMessage.id, editText.trim());
+
+      if (response?.status === 'success') {
+        // Update message in UI
+        setMessages(prevMessages =>
+          prevMessages.map(msg =>
+            msg.id === editingMessage.id ? { ...msg, ...response.data.message } : msg
+          )
+        );
+
+        // Clear edit state
+        setEditingMessage(null);
+        setEditText("");
+      } else {
+        Alert.alert("Error", "Failed to edit message. Please try again.");
+      }
+    } catch (error) {
+      console.error('Error editing message:', error);
+      Alert.alert("Error", "An error occurred while editing the message.");
+    }
+  }, [editingMessage, editText, chatId]);
+
+  // Cancel edit
+  const cancelEdit = useCallback(() => {
+    setEditingMessage(null);
+    setEditText("");
+  }, []);
+
+  // Clear reply
+  const clearReply = useCallback(() => {
+    setReplyingToMessage(null);
+  }, []);
+
+  // Get replied message for display
+  const getReplyMessage = useCallback((replyToMessageId: number | null): Message | null => {
+    if (!replyToMessageId) return null;
+    return messages.find(msg => msg.id === replyToMessageId) || null;
+  }, [messages]);
 
   // ---- Audio recording management ----
 
@@ -326,15 +623,12 @@ export default function ChatScreen() {
 
         setIsKeyboardVisible(true);
 
-        // Only scroll if we're at the bottom and have a valid ref
-        if (scrollState.isAtBottom && flatListRef.current) {
-          // Delay scrolling slightly to ensure layout is complete
-          setTimeout(() => {
-            if (isMounted.current && flatListRef.current) {
-              flatListRef.current.scrollToEnd({ animated: false });
-            }
-          }, 100);
-        }
+        // Always scroll to bottom when keyboard opens to show latest messages
+        setTimeout(() => {
+          if (isMounted.current && flatListRef.current) {
+            flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+          }
+        }, 150);
       } catch (error) {
         console.warn('Error handling keyboard show:', error);
       }
@@ -366,7 +660,7 @@ export default function ChatScreen() {
         console.warn('Error removing keyboard listeners:', error);
       }
     };
-  }, [scrollState.isAtBottom]);
+  }, []);
 
   // ---- UI Interaction Handlers ----
 
@@ -377,8 +671,8 @@ export default function ChatScreen() {
   // Phone call handler
   const handlePhoneCall = useCallback(async () => {
     try {
-      // Initialize Agora service
-      await agoraService.initialize();
+      // Initialize VideoSDK service
+      await videoSDKService.initialize();
 
       // Set call type to audio
       setIsVideoCall(false);
@@ -398,8 +692,8 @@ export default function ChatScreen() {
   // Video call handler
   const handleVideoCall = useCallback(async () => {
     try {
-      // Initialize Agora service
-      await agoraService.initialize();
+      // Initialize VideoSDK service
+      await videoSDKService.initialize();
 
       // Set call type to video
       setIsVideoCall(true);
@@ -597,6 +891,12 @@ export default function ChatScreen() {
 
   // Send text message
   const handleSend = useCallback(async () => {
+    // Handle editing existing message
+    if (editingMessage) {
+      await sendEditedMessage();
+      return;
+    }
+
     if (message.trim() === "") return;
 
     // Check if chatId is valid
@@ -607,6 +907,7 @@ export default function ChatScreen() {
 
     // Store message for potential restore
     const messageToSend = message.trim();
+    const replyToId = replyingToMessage?.id;
 
     try {
       // Show sending state
@@ -615,6 +916,11 @@ export default function ChatScreen() {
       // Clear the input field immediately for better UX
       setMessage("");
 
+      // Clear reply state
+      if (replyingToMessage) {
+        setReplyingToMessage(null);
+      }
+
       // Send the message using the chat service
       const response = await chatsService.sendMessage(
           chatId,
@@ -622,15 +928,23 @@ export default function ChatScreen() {
           "text", // message_type
           undefined, // media_url
           undefined, // media_data
-          undefined  // reply_to_message_id
+          replyToId  // reply_to_message_id
       );
 
       if (response) {
-        // Append new messages at the end
-        setMessages(prevMessages => [...prevMessages, response.data.message]);
-
-        // No need to manually scroll with inverted list
-        // New messages appear at the top automatically
+        // Add new message with smooth animation effect
+        setMessages(prevMessages => {
+          const newMessages = mergeMessagesByID(prevMessages, [response.data.message]);
+          
+          // Scroll to bottom with animation after adding new message
+          setTimeout(() => {
+            if (isMounted.current && flatListRef.current) {
+              flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+            }
+          }, 50);
+          
+          return newMessages;
+        });
       } else {
         // This should not happen as chatsService.sendMessage always returns a response
         // But just in case, show an error message
@@ -642,12 +956,20 @@ export default function ChatScreen() {
 
         // Restore message to input field
         setMessage(messageToSend);
+        // Restore reply state
+        if (replyToId) {
+          setReplyingToMessage(messages.find(msg => msg.id === replyToId) || null);
+        }
       }
     } catch (err) {
       console.error('Error sending message:', err);
 
       // Restore message to input field
       setMessage(messageToSend);
+      // Restore reply state
+      if (replyToId) {
+        setReplyingToMessage(messages.find(msg => msg.id === replyToId) || null);
+      }
 
       // Show an error message
       Alert.alert(
@@ -658,7 +980,7 @@ export default function ChatScreen() {
     } finally {
       setIsSending(false);
     }
-  }, [message, chatId]);
+  }, [message, chatId, editingMessage, replyingToMessage, sendEditedMessage, messages, mergeMessagesByID]);
 
   // ---- Voice message functions ----
 
@@ -788,7 +1110,7 @@ export default function ChatScreen() {
       formData.append('content', `Voice message (${formatDuration(duration)})`);
       formData.append('message_type', 'voice');
       formData.append('media_data', JSON.stringify({ duration }));
-      
+
       // Add the actual file
       formData.append('media_file', {
         uri: recordedAudio.uri,
@@ -800,8 +1122,19 @@ export default function ChatScreen() {
       const response = await chatsService.sendVoiceMessage(chatId, formData);
 
       if (response) {
-        // Append new messages at the end
-        setMessages(prevMessages => [...prevMessages, response.data.message]);
+        // Add voice message with smooth animation effect
+        setMessages(prevMessages => {
+          const newMessages = mergeMessagesByID(prevMessages, [response.data.message]);
+          
+          // Scroll to bottom with animation after adding voice message
+          setTimeout(() => {
+            if (isMounted.current && flatListRef.current) {
+              flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+            }
+          }, 50);
+          
+          return newMessages;
+        });
         setRecordingState(prev => ({
           ...prev,
           recordedAudio: null,
@@ -824,7 +1157,7 @@ export default function ChatScreen() {
     } finally {
       setIsSending(false);
     }
-  }, [chatId, recordingState, formatDuration]);
+  }, [chatId, recordingState, formatDuration, mergeMessagesByID]);
 
   // Handle file attachment
   const handleAttachFile = useCallback(async () => {
@@ -848,17 +1181,17 @@ export default function ChatScreen() {
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
         console.log('Selected asset:', asset);
-        
+
         // Determine message type based on media type
         const messageType = asset.type === 'video' ? 'video' : 'image';
-        
+
         // Set selected file for preview
         const fileInfo = {
           uri: asset.uri,
           type: messageType as 'image' | 'video',
           name: asset.type === 'video' ? 'video.mp4' : 'image.jpg'
         };
-        
+
         console.log('File info for preview:', fileInfo);
         setSelectedFile(fileInfo);
         setShowFilePreview(true);
@@ -885,14 +1218,14 @@ export default function ChatScreen() {
       const formData = new FormData();
       formData.append('content', `Sent a ${selectedFile.type}`);
       formData.append('message_type', selectedFile.type);
-      
+
       // Add the file with proper file info
       const fileInfo = {
         uri: selectedFile.uri,
         type: selectedFile.type === 'video' ? 'video/mp4' : 'image/jpeg',
         name: selectedFile.name
       };
-      
+
       console.log('File info being sent:', fileInfo);
       formData.append('media_file', fileInfo as any);
 
@@ -900,8 +1233,19 @@ export default function ChatScreen() {
       const response = await chatsService.sendVoiceMessage(chatId, formData);
 
       if (response) {
-        // Append new messages at the end
-        setMessages(prevMessages => [...prevMessages, response.data.message]);
+        // Add file message with smooth animation effect
+        setMessages(prevMessages => {
+          const newMessages = mergeMessagesByID(prevMessages, [response.data.message]);
+          
+          // Scroll to bottom with animation after adding file message
+          setTimeout(() => {
+            if (isMounted.current && flatListRef.current) {
+              flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+            }
+          }, 50);
+          
+          return newMessages;
+        });
       } else {
         Alert.alert(
           "Error",
@@ -920,7 +1264,7 @@ export default function ChatScreen() {
       setIsAttachingFile(false);
       setSelectedFile(null);
     }
-  }, [selectedFile, chatId]);
+  }, [selectedFile, chatId, mergeMessagesByID]);
 
   // Cancel file preview
   const cancelFilePreview = useCallback(() => {
@@ -963,11 +1307,42 @@ export default function ChatScreen() {
     return format(date, "h:mm a"); // e.g., "3:30 PM"
   }, []);
 
-  // Format last active time
-  const formatLastActive = useCallback((timestamp: string): string => {
+  // Format last active time with online status
+  const formatLastActive = useCallback((timestamp: string | null | undefined): string => {
     if (!timestamp) return "Last seen recently";
-    const date = new Date(timestamp);
-    return `Last seen ${formatDistanceToNow(date, { addSuffix: true })}`;
+    try {
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime())) return "Last seen recently";
+      
+      const now = new Date();
+      const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+      
+      // Show "Online" if user was active within last 2 minutes
+      if (diffInMinutes < 2) {
+        return "Online";
+      }
+      
+      return `Last seen ${formatDistanceToNow(date, { addSuffix: true })}`;
+    } catch (error) {
+      console.error('Error formatting last active time:', error);
+      return "Last seen recently";
+    }
+  }, []);
+
+  // Check if user is online (active within 2 minutes)
+  const isUserOnline = useCallback((timestamp: string | null | undefined): boolean => {
+    if (!timestamp) return false;
+    try {
+      const date = new Date(timestamp);
+      if (isNaN(date.getTime())) return false;
+      
+      const now = new Date();
+      const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+      
+      return diffInMinutes < 2;
+    } catch (error) {
+      return false;
+    }
   }, []);
 
   // Send typing indicator - debounced for performance
@@ -982,11 +1357,28 @@ export default function ChatScreen() {
           if (!currentUserId || !chatChannel) {
             return;
           }
-          // Send typing indicator via WebSocket service
+          
+          // Get current user info for typing indicator
+          const userData = await AsyncStorage.getItem('user_data');
+          let userName = 'You';
+          
+          if (userData) {
+            try {
+              const user = JSON.parse(userData);
+              userName = user.profile ? `${user.profile.first_name}` : user.email;
+            } catch (error) {
+              console.warn('Error parsing user data for typing indicator:', error);
+            }
+          }
+          
+          // Send typing indicator via WebSocket service with proper user info
           webSocketService.sendTyping(chatId, {
+            user_id: currentUserId,
             id: currentUserId,
-            name: 'You'
+            name: userName,
+            user_name: userName
           });
+          
           setLastTypingTime(Date.now());
         } catch (error) {
           console.error('Error sending typing indicator:', error);
@@ -997,19 +1389,24 @@ export default function ChatScreen() {
 
   // Handle message input change
   const handleMessageChange = useCallback((text: string) => {
-    setMessage(text);
+    if (editingMessage) {
+      setEditText(text);
+    } else {
+      setMessage(text);
+    }
 
     // Send typing indicator if message has content
     if (text.trim().length > 0) {
       debouncedSendTypingIndicator();
     }
-  }, [debouncedSendTypingIndicator]);
+  }, [debouncedSendTypingIndicator, editingMessage]);
 
   // ---- Rendering functions ----
 
   // Render message item using our MessageItem component
   const renderMessage = useCallback(({ item }: { item: Message }) => {
     const isCurrentlyPlaying = audioPlayback.isPlaying && audioPlayback.currentMessageId === item.id;
+    const replyToMessage = getReplyMessage(item.reply_to_message_id);
 
     return (
       <MessageItem
@@ -1019,9 +1416,26 @@ export default function ChatScreen() {
         isCurrentlyPlaying={isCurrentlyPlaying}
         onPlayVoiceMessage={playVoiceMessage}
         onRetry={handleRetry}
+        onEdit={handleEditMessage}
+        onDelete={handleDeleteMessage}
+        onReply={handleReplyToMessage}
+        replyToMessage={replyToMessage}
+        currentUserId={chat?.pivot?.user_id || 0}
+        otherUserId={chat?.other_user?.id || 0}
       />
     );
-  }, [audioPlayback, formatDuration, formatMessageTime, handleRetry, playVoiceMessage]);
+  }, [
+    audioPlayback,
+    formatDuration,
+    formatMessageTime,
+    handleRetry,
+    playVoiceMessage,
+    handleEditMessage,
+    handleDeleteMessage,
+    handleReplyToMessage,
+    getReplyMessage,
+    chat
+  ]);
 
   // ---- Render UI states ----
 
@@ -1051,7 +1465,7 @@ export default function ChatScreen() {
   }
 
   // Chat not found state
-  if (!chat) {
+  if (!chat && messages.length === 0) {
     return (
         <Box flex={1} justifyContent="center" alignItems="center" bg="#FFFFFF">
           <Text>Chat not found</Text>
@@ -1115,7 +1529,7 @@ export default function ChatScreen() {
                 </Box>
               )}
             </Box>
-            
+
             {/* Action Buttons */}
             <HStack p="$4" space="md" justifyContent="center">
               <Button
@@ -1151,17 +1565,22 @@ export default function ChatScreen() {
         bg="#FFFFFF"
       >
         {/* Chat Header */}
-        <ChatHeader
-          chat={chat}
-          isTyping={isTyping}
-          typingUser={typingUser}
-          formatLastActive={formatLastActive}
-          onGoBack={handleGoBack}
-          onPhoneCall={handlePhoneCall}
-          onVideoCall={handleVideoCall}
-          onOpenOptions={() => setOptionsVisible(true)}
-          getProfilePhotoUrl={getProfilePhotoUrl}
-        />
+        {chat && (
+          <ChatHeader
+            chat={chat}
+            isTyping={isTyping}
+            typingUser={typingUser}
+            isLoadingFromAPI={isLoadingFromAPI}
+            isSending={isSending}
+            formatLastActive={formatLastActive}
+            isUserOnline={isUserOnline}
+            onGoBack={handleGoBack}
+            onPhoneCall={handlePhoneCall}
+            onVideoCall={handleVideoCall}
+            onOpenOptions={() => setOptionsVisible(true)}
+            getProfilePhotoUrl={getProfilePhotoUrl}
+          />
+        )}
 
         {/* Chat Options Modal */}
         <ChatOptions
@@ -1174,9 +1593,10 @@ export default function ChatScreen() {
 
           {/* Messages List */}
           <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : undefined}
-              keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 0}
+              behavior={Platform.OS === "ios" ? "padding" : "height"}
+              keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
               style={{ flex: 1 }}
+              enabled={true}
           >
             <Box flex={1}>
               <FlatList
@@ -1185,15 +1605,20 @@ export default function ChatScreen() {
                   renderItem={renderMessage}
                   keyExtractor={(item) => item.id.toString()}
                   contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8 }}
-                  onStartReached={loadMoreMessages}
-                  onStartReachedThreshold={0.1}
+                  inverted={true}
+                  onEndReached={loadMoreMessages}
+                  onEndReachedThreshold={0.5}
                   initialNumToRender={15}
                   maxToRenderPerBatch={10}
                   windowSize={21}
                   removeClippedSubviews={Platform.OS === 'android'}
+                  showsVerticalScrollIndicator={false}
                   ListFooterComponent={loadingMore ? (
                       <Box py="$2" alignItems="center">
-                        <ActivityIndicator size="small" color="#8B5CF6" />
+                        <HStack space="sm" alignItems="center">
+                          <ActivityIndicator size="small" color="#8B5CF6" />
+                          <Text color="#6B7280" fontSize="$xs">Loading older messages...</Text>
+                        </HStack>
                       </Box>
                   ) : null}
                   onScroll={(event) => {
@@ -1202,7 +1627,7 @@ export default function ChatScreen() {
                     const offset = event.nativeEvent.contentOffset.y;
                     const contentHeight = event.nativeEvent.contentSize.height;
                     const layoutHeight = event.nativeEvent.layoutMeasurement.height;
-                    const isAtBottom = offset + layoutHeight >= contentHeight - 20;
+                    const isAtBottom = offset <= 20; // For inverted list, bottom is when offset is near 0
                     setScrollState({
                       offset,
                       contentHeight,
@@ -1227,19 +1652,52 @@ export default function ChatScreen() {
                   }}
               />
 
-              {/* Typing Indicator */}
-              {isTyping && typingUser && chat.other_user && typingUser === (chat.other_user.profile ? chat.other_user.profile.first_name : chat.other_user.email) && (
-                  <TypingIndicator
-                    typingUser={typingUser}
-                    userAvatar={getProfilePhotoUrl(chat.other_user) || "https://via.placeholder.com/50"}
-                    userName={chat.other_user.profile ? chat.other_user.profile.first_name : typingUser}
-                  />
+              {/* Reply Preview */}
+              {replyingToMessage && (
+                <Box bg="#F3F4F6" p="$3" mx="$4" borderRadius="$md" borderLeftWidth={3} borderLeftColor="#8B5CF6">
+                  <HStack justifyContent="space-between" alignItems="flex-start">
+                    <VStack flex={1}>
+                      <Text color="#6B7280" fontSize="$xs" fontWeight="$medium" mb="$1">
+                        Replying to {replyingToMessage.is_mine ? "yourself" : (chat?.other_user?.profile?.first_name || "User")}
+                      </Text>
+                      <Text color="#1F2937" fontSize="$sm" numberOfLines={2}>
+                        {replyingToMessage.content}
+                      </Text>
+                    </VStack>
+                    <Box ml="$2">
+                      <Pressable onPress={clearReply}>
+                        <Ionicons name="close" size={20} color="#6B7280" />
+                      </Pressable>
+                    </Box>
+                  </HStack>
+                </Box>
+              )}
+
+              {/* Edit Preview */}
+              {editingMessage && (
+                <Box bg="#FEF3C7" p="$3" mx="$4" borderRadius="$md" borderLeftWidth={3} borderLeftColor="#F59E0B">
+                  <HStack justifyContent="space-between" alignItems="flex-start">
+                    <VStack flex={1}>
+                      <Text color="#92400E" fontSize="$xs" fontWeight="$medium" mb="$1">
+                        Editing message
+                      </Text>
+                      <Text color="#1F2937" fontSize="$sm" numberOfLines={2}>
+                        {editingMessage.content}
+                      </Text>
+                    </VStack>
+                    <Box ml="$2">
+                      <Pressable onPress={cancelEdit}>
+                        <Ionicons name="close" size={20} color="#92400E" />
+                      </Pressable>
+                    </Box>
+                  </HStack>
+                </Box>
               )}
 
               {/* Voice Message Preview */}
               {recordingState.showVoiceMessage && recordingState.recordedAudio && (
                   <MessageInput
-                    message={message}
+                    message={editingMessage ? editText : message}
                     isSending={isSending}
                     recordingState={recordingState}
                     isPlaying={audioPlayback.isPlaying}
@@ -1260,7 +1718,7 @@ export default function ChatScreen() {
               {/* Message Input */}
               {!recordingState.showVoiceMessage && (
                   <MessageInput
-                    message={message}
+                    message={editingMessage ? editText : message}
                     isSending={isSending || isAttachingFile}
                     recordingState={recordingState}
                     isPlaying={audioPlayback.isPlaying}
@@ -1283,3 +1741,5 @@ export default function ChatScreen() {
       </Box>
   );
 }
+
+
