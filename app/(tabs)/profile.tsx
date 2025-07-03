@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/context/auth-context";
 import {
@@ -18,10 +18,26 @@ import {
   Divider,
 } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
+import { apiClient } from "@/services/api-client";
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { logout, user } = useAuth();
+  const { logout, user, updateUser } = useAuth();
+
+  // Refresh profile from API when screen mounts
+  useEffect(() => {
+    const refreshProfile = async () => {
+      try {
+        const response = await apiClient.profile.getMe();
+        if (response.status === 'success' && response.data) {
+          await updateUser({ profile: response.data });
+        }
+      } catch (e) {
+        console.warn('Failed to refresh profile:', e);
+      }
+    };
+    refreshProfile();
+  }, []);
 
   const handleLogout = async () => {
     try {

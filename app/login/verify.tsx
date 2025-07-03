@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { TouchableOpacity, Alert } from 'react-native';
+import { TouchableOpacity, Alert, BackHandler } from 'react-native';
 import { Stack, useRouter, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import {
@@ -19,6 +19,8 @@ import { Platform } from 'react-native';
 import { OTPInput } from '@/components/ui/otp-input';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/context/auth-context';
+// @ts-ignore
+import { useFocusEffect } from '@react-navigation/native';
 
 export default function OTPVerificationScreen() {
   const router = useRouter();
@@ -101,6 +103,14 @@ export default function OTPVerificationScreen() {
       console.error('Error resending OTP:', error);
     }
   };
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const onBackPress = () => true;
+      BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => BackHandler.removeEventListener('hardwareBackPress', onBackPress);
+    }, [])
+  );
 
   return (
     <SafeAreaView flex={1} bg="$backgroundLight0">

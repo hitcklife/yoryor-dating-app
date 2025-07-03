@@ -9,6 +9,8 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiClient } from './api-client';
 import { CONFIG } from './config';
+// @ts-ignore - the VideoSDK package does not ship with Typescript typings
+import { register as registerVideoSDK } from '@videosdk.live/react-native-sdk';
 
 export interface VideoSDKConfig {
   token: string;
@@ -40,6 +42,13 @@ class VideoSDKService {
   private isDestroyed: boolean = false;
 
   constructor() {
+    try {
+      registerVideoSDK();
+      console.log('✅ VideoSDK services registered');
+    } catch (e: any) {
+      console.warn('VideoSDK register() failed or not required:', e?.message || e);
+    }
+
     this.initialize();
   }
 

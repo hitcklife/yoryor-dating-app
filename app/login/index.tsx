@@ -47,7 +47,7 @@ export default function PhoneLoginScreen() {
       const success = await sendOTP(phoneToUse);
 
       if (success) {
-        router.push({
+        router.replace({
           pathname: '/login/verify',
           params: { phoneNumber: phoneToUse }
         });
