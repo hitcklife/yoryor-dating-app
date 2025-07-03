@@ -1,7 +1,7 @@
 import React from 'react';
 import { useEffect } from "react";
 import { Tabs, useRouter } from 'expo-router';
-import { ActivityIndicator } from 'react-native';
+import { ActivityIndicator, BackHandler } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from "@/context/auth-context";
 import {
@@ -12,6 +12,7 @@ import {
 } from '@gluestack-ui/themed';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useClientOnlyValue } from '@/components/useClientOnlyValue';
+import { useFocusEffect } from '@react-navigation/native';
 
 // Tab Bar Icon Component with circular outline for selected state
 function TabBarIcon(props: {
@@ -55,20 +56,44 @@ function TabBarIcon(props: {
 }
 
 export default function TabLayout() {
-  const { isAuthenticated, isRegistrationCompleted, isLoading } = useAuth();
+  const { isAuthenticated, isRegistrationCompleted, isLoading, refreshUserData } = useAuth();
   const colorScheme = useColorScheme();
   const router = useRouter();
+
+  // Prevent back navigation when user is authenticated and in tabs
+  useFocusEffect(
+    React.useCallback(() => {
+      const onBackPress = () => {
+        if (isAuthenticated && isRegistrationCompleted) {
+          // Don't allow going back to login/registration when in main app
+          return true;
+        }
+        return false;
+      };
+
+      const subscription = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+      return () => subscription.remove();
+    }, [isAuthenticated, isRegistrationCompleted])
+  );
 
   useEffect(() => {
     // Only redirect after loading is complete
     if (!isLoading) {
       if (!isAuthenticated) {
+        // Clear navigation stack and go to login
         router.replace("/login");
       } else if (!isRegistrationCompleted) {
+        // Clear navigation stack and go to registration
         router.replace("/registration");
+      } else {
+        // User is fully authenticated and registered
+        // Refresh user data to ensure we have latest info
+        refreshUserData().catch(error => {
+          console.error('Failed to refresh user data:', error);
+        });
       }
     }
-  }, [isAuthenticated, isRegistrationCompleted, isLoading]);
+  }, [isAuthenticated, isRegistrationCompleted, isLoading, refreshUserData]);
 
   // Show loading spinner while checking authentication
   if (isLoading) {

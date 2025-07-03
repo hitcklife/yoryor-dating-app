@@ -738,13 +738,57 @@ class ApiClient {
      * Agora endpoints
      */
     public agora = {
-        getToken: async (channelName: string, userId: string, role: 'publisher' | 'subscriber' = 'publisher') => {
+        getToken: async (channelName: string, userId: string) => {
             return this.post('/api/v1/agora/token', {
                 channel_name: channelName,
-                user_id: userId,
-                role: role,
+                user_id: userId
             });
+        }
+    };
+
+    // Profile management
+    public profile = {
+        getMyProfile: async () => {
+            return this.get('/api/v1/profile/me');
         },
+
+        updateProfile: async (profileId: number, data: any) => {
+            return this.put(`/api/v1/profile/${profileId}`, data);
+        },
+
+        uploadPhoto: async (photoFile: { uri: string; name: string; type: string }, isProfilePhoto: boolean = false, order: number = 0, isPrivate: boolean = false) => {
+            return this.upload(
+                '/api/v1/photos/upload',
+                [photoFile],
+                'photo',
+                {
+                    is_profile_photo: isProfilePhoto,
+                    order: order,
+                    is_private: isPrivate
+                }
+            );
+        },
+
+        getPhotos: async () => {
+            return this.get('/api/v1/photos');
+        },
+
+        deletePhoto: async (photoId: number) => {
+            return this.delete(`/api/v1/photos/${photoId}`);
+        }
+    };
+
+    // Video call endpoints
+    public videoCall = {
+        getToken: async () => {
+            return this.post('/api/v1/video-call/token');
+        },
+
+        createRoom: async (customRoomId?: string) => {
+            return this.post('/api/v1/video-call/room', {
+                custom_room_id: customRoomId
+            });
+        }
     };
 }
 

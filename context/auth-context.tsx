@@ -21,6 +21,7 @@ type AuthContextType = {
     login: (token: string, user: User) => Promise<void>;
     logout: () => Promise<void>;
     fetchHomeStats: () => Promise<HomeStats | null>;
+    refreshUserData: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -37,22 +38,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             try {
                 setIsLoading(true);
                 const token = await AsyncStorage.getItem('auth_token');
+                
                 if (token) {
                     // Set the token in api client
                     await apiClient.setAuthToken(token);
 
+                    // Try to get fresh user data from API
+                    try {
+                        const response = await apiClient.get('/api/v1/profile/me');
+                        
+                        if (response.status === 'success' && response.data) {
+                            // Use fresh data from API
+                            const freshUserData = response.data;
+                            
+                            // Update stored user data
+                            await AsyncStorage.setItem('user_data', JSON.stringify(freshUserData));
+                            
+                            setUser(freshUserData);
+                            setIsRegistrationCompleted(freshUserData.registration_completed);
+                            setIsAuthenticated(true);
+                            
+                            console.log('✅ Fresh user data loaded from API');
+                            return;
+                        }
+                    } catch (apiError) {
+                        console.warn('Failed to fetch fresh user data, using cached data:', apiError);
+                    }
+
+                    // Fallback to cached user data
                     const userData = await AsyncStorage.getItem('user_data');
                     if (userData) {
                         const parsedUser = JSON.parse(userData);
                         setUser(parsedUser);
                         setIsRegistrationCompleted(parsedUser.registration_completed);
                         setIsAuthenticated(true);
+                        console.log('📱 Using cached user data');
                     } else {
+                        // No user data available, clear token and reset state
                         await AsyncStorage.removeItem('auth_token');
                         setIsAuthenticated(false);
+                        console.log('⚠️ No user data found, clearing auth token');
                     }
                 } else {
                     setIsAuthenticated(false);
+                    console.log('ℹ️ No auth token found');
                 }
             } catch (error) {
                 console.error('Error checking auth status:', error);
@@ -64,6 +93,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         checkAuthStatus();
     }, []);
+
+    const refreshUserData = async (): Promise<void> => {
+        try {
+            const token = await AsyncStorage.getItem('auth_token');
+            if (!token) {
+                console.error('No auth token found for refresh');
+                return;
+            }
+
+            // Ensure api client has the token
+            await apiClient.setAuthToken(token);
+
+            const response = await apiClient.get('/api/v1/profile/me');
+            
+            if (response.status === 'success' && response.data) {
+                const freshUserData = response.data;
+                
+                // Update stored user data
+                await AsyncStorage.setItem('user_data', JSON.stringify(freshUserData));
+                
+                setUser(freshUserData);
+                setIsRegistrationCompleted(freshUserData.registration_completed);
+                
+                console.log('✅ User data refreshed successfully');
+            }
+        } catch (error) {
+            console.error('Error refreshing user data:', error);
+            // Don't throw - this is often called in background
+        }
+    };
 
     const sendOTP = async (phone: string): Promise<boolean> => {
         try {
@@ -113,7 +172,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     registration_completed: true
                 };
 
+                // Update user data with registration completion
                 await login(response.data?.token || '', updatedUser);
+                
+                // Force a refresh of user data to get the latest profile info
+                setTimeout(async () => {
+                    await refreshUserData();
+                }, 1000);
+
                 return { success: true, userData: updatedUser };
             }
 
@@ -166,6 +232,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setUser(userData);
             setIsRegistrationCompleted(userData.registration_completed);
             setIsAuthenticated(true);
+            
+            console.log('✅ User logged in successfully');
         } catch (error) {
             console.error('Error during login:', error);
             throw error;
@@ -192,6 +260,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setStats(null);
             setIsRegistrationCompleted(false);
             setIsAuthenticated(false);
+            
+            console.log('✅ User logged out successfully');
         } catch (error) {
             console.error('Error during logout:', error);
             throw error;
@@ -210,7 +280,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             completeRegistration,
             login,
             logout,
-            fetchHomeStats
+            fetchHomeStats,
+            refreshUserData
         }}>
             {children}
         </AuthContext.Provider>
