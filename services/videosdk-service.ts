@@ -71,31 +71,44 @@ class VideoSDKService {
   }
 
   /**
-   * Get token from backend API or return test token
+   * Get token from backend API
    */
   private async getTokenInternal(): Promise<string> {
     try {
-      const token = await AsyncStorage.getItem('videosdk_token');
-      if (token) {
-        return token;
+      // Always get a fresh token from the backend for each call
+      const response = await apiClient.post('/api/v1/video-call/token');
+      if (response.data?.token) {
+        // Store for potential reuse within short timeframe
+        await AsyncStorage.setItem('videosdk_token', response.data.token);
+        await AsyncStorage.setItem('videosdk_token_timestamp', Date.now().toString());
+        return response.data.token;
+      } else if (response.data && typeof response.data === 'string') {
+        // Handle case where token is returned directly as string
+        await AsyncStorage.setItem('videosdk_token', response.data);
+        await AsyncStorage.setItem('videosdk_token_timestamp', Date.now().toString());
+        return response.data;
       }
-
-      // Try to get token from backend
-      try {
-        const response = await apiClient.post('/api/v1/video-call/token');
-        if (response.data?.token) {
-          await AsyncStorage.setItem('videosdk_token', response.data.token);
-          return response.data.token;
-        }
-      } catch (apiError) {
-        console.warn('Backend token request failed:', apiError);
-      }
-
-      // Return test token provided by user
-      console.warn('Using test token for development');
-      return 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhcGlrZXkiOiI1NmRjZjQ5ZS0xYTAxLTQ1MmMtOWIwZC1mMGNlMWVjNmY1YjgiLCJwZXJtaXNzaW9ucyI6WyJhbGxvd19qb2luIl0sImlhdCI6MTc1MTQ0MTUwMSwiZXhwIjoxNzU0MDMzNTAxfQ.hiPXMATEPz0uVTpsDMdnIyhE7a4zpk0I3X6pGPOLPg4';
+      
+      throw new Error('Invalid token response from server');
     } catch (error) {
       console.error('Error getting VideoSDK token:', error);
+      
+      // Try to use cached token if it's recent (within 1 hour)
+      try {
+        const cachedToken = await AsyncStorage.getItem('videosdk_token');
+        const timestamp = await AsyncStorage.getItem('videosdk_token_timestamp');
+        
+        if (cachedToken && timestamp) {
+          const age = Date.now() - parseInt(timestamp);
+          if (age < 3600000) { // 1 hour
+            console.warn('Using cached token due to API error');
+            return cachedToken;
+          }
+        }
+      } catch (cacheError) {
+        console.error('Error reading cached token:', cacheError);
+      }
+      
       throw error;
     }
   }
@@ -141,15 +154,29 @@ class VideoSDKService {
    */
   async createMeetingForChat(chatId: number): Promise<string> {
     try {
+      // Use a deterministic custom room ID based on chat ID
+      const customRoomId = `chat-${chatId}-meeting-${new Date().toISOString().split('T')[0]}`;
+      console.log('Creating meeting with custom room ID:', customRoomId);
+
+      // Try to create meeting using backend API first
+      try {
+        const response = await apiClient.post('/api/v1/video-call/create-meeting', {
+          customRoomId: customRoomId
+        });
+        
+        if (response.data?.meetingId) {
+          console.log('✅ Meeting created via backend with ID:', response.data.meetingId);
+          return response.data.meetingId;
+        }
+      } catch (backendError) {
+        console.warn('Backend meeting creation failed, trying direct VideoSDK API:', backendError);
+      }
+
+      // Fallback to direct VideoSDK API
       if (!this.token) {
         this.token = await this.getTokenInternal();
       }
 
-      // Use a deterministic custom room ID based on chat ID
-      const customRoomId = `chat-${chatId}-meeting`;
-      console.log('Creating meeting with custom room ID:', customRoomId);
-
-      // Create meeting using VideoSDK API with custom room ID
       const response = await fetch('https://api.videosdk.live/v2/rooms', {
         method: 'POST',
         headers: {
@@ -183,7 +210,7 @@ class VideoSDKService {
       
       // Fallback: return the deterministic meeting ID anyway
       // VideoSDK might still allow joining if the room gets created by the first participant
-      const fallbackMeetingId = `chat-${chatId}-meeting`;
+      const fallbackMeetingId = `chat-${chatId}-meeting-${Date.now()}`;
       console.warn('Using fallback meeting ID:', fallbackMeetingId);
       return fallbackMeetingId;
     }

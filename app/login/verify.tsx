@@ -64,8 +64,12 @@ export default function OTPVerificationScreen() {
         const userData = result.userData;
 
         if (userData && userData.registration_completed) {
+          // Use reset to clear navigation stack
+          router.dismissAll();
           router.replace('/(tabs)');
         } else {
+          // Use reset to clear navigation stack
+          router.dismissAll();
           router.replace('/registration');
         }
       } else {

@@ -179,6 +179,15 @@ export default function TabLayout() {
           ),
         }}
       />
+
+      {/* Hidden Edit Profile Screen */}
+      <Tabs.Screen
+        name="edit-profile"
+        options={{
+          href: null,
+          tabBarStyle: { display: 'none' },
+        }}
+      />
     </Tabs>
   );
 }

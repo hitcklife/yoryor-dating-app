@@ -114,8 +114,7 @@ export default function ProfileScreen() {
             py="$2"
             borderRadius="$full"
             onPress={() => {
-              // Handle edit profile
-              console.log("Edit profile pressed");
+              router.push("/edit-profile");
             }}
           >
             <Ionicons name="pencil" size={16} color="white" />

@@ -45,8 +45,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     if (userData) {
                         const parsedUser = JSON.parse(userData);
                         setUser(parsedUser);
-                        setIsRegistrationCompleted(parsedUser.registration_completed);
+                        setIsRegistrationCompleted(parsedUser.registration_completed || false);
                         setIsAuthenticated(true);
+                        
+                        // Fetch fresh user data from server to ensure we have latest info
+                        try {
+                            const response = await apiClient.auth.getHomeStats();
+                            if (response.status === 'success' && response.data?.user) {
+                                const updatedUser = response.data.user;
+                                setUser(updatedUser);
+                                setIsRegistrationCompleted(updatedUser.registration_completed || false);
+                                await AsyncStorage.setItem('user_data', JSON.stringify(updatedUser));
+                            }
+                        } catch (fetchError) {
+                            console.error('Error fetching user data:', fetchError);
+                            // Continue with cached data
+                        }
                     } else {
                         await AsyncStorage.removeItem('auth_token');
                         setIsAuthenticated(false);

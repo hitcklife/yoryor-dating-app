@@ -144,6 +144,8 @@ export default function PreviewScreen() {
       const result = await completeRegistration(registrationData);
 
       if (result.success) {
+        // Clear navigation stack to prevent going back
+        router.dismissAll();
         router.replace('/(tabs)');
       } else {
         setError('Failed to complete registration. Please try again.');
