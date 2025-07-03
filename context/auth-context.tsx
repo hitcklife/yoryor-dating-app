@@ -21,6 +21,7 @@ type AuthContextType = {
     login: (token: string, user: User) => Promise<void>;
     logout: () => Promise<void>;
     fetchHomeStats: () => Promise<HomeStats | null>;
+    updateUser: (data: Partial<User>) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -108,12 +109,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
             if (response.status === 'success') {
                 const userData = response.data?.user;
+
+                // Merge with existing user to retain token and other properties
                 const updatedUser = {
+                    ...(user || {}),
                     ...userData,
                     registration_completed: true
-                };
+                } as User;
 
-                await login(response.data?.token || '', updatedUser);
+                // Persist updated user information without touching the token
+                await AsyncStorage.setItem('user_data', JSON.stringify(updatedUser));
+
+                setUser(updatedUser);
+                setIsRegistrationCompleted(true);
+                setIsAuthenticated(true);
+
                 return { success: true, userData: updatedUser };
             }
 
@@ -198,6 +208,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     };
 
+    /**
+     * Update user object and persist to storage
+     */
+    const updateUser = async (data: Partial<User>): Promise<void> => {
+        let mergedUser: User | null = null;
+
+        // Update state immediately and capture the merged user
+        setUser((prev: User | null): User | null => {
+            if (!prev) return prev;
+            mergedUser = { ...prev, ...data } as User;
+            return mergedUser;
+        });
+
+        // If we managed to merge, persist to storage
+        if (mergedUser) {
+            await AsyncStorage.setItem('user_data', JSON.stringify(mergedUser));
+        }
+    };
+
     return (
         <AuthContext.Provider value={{
             isAuthenticated,
@@ -210,7 +239,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             completeRegistration,
             login,
             logout,
-            fetchHomeStats
+            fetchHomeStats,
+            updateUser,
         }}>
             {children}
         </AuthContext.Provider>

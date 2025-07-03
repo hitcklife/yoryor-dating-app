@@ -746,6 +746,19 @@ class ApiClient {
             });
         },
     };
+
+    /**
+     * Profile endpoints
+     */
+    public profile = {
+        getMe: async () => {
+            return this.get('/api/v1/profile/me');
+        },
+
+        update: async (profileId: number | string, data: any) => {
+            return this.put(`/api/v1/profile/${profileId}`, data);
+        },
+    };
 }
 
 // Export singleton instance
