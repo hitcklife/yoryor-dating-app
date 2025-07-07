@@ -26,14 +26,15 @@ import {
 } from '@gluestack-ui/themed';
 
 interface PhotoData {
-  id: string;
-  uri: string;
+  file: any;           // Actual file object for server
+  uri: string;         // Local URI for display
   isMain: boolean;
-  isPrivate: boolean;
+  type?: string;
+  name?: string;
 }
 
-// Private Photo Info Modal
-const PrivatePhotoInfoModal = ({
+// Private Profile Info Modal
+const PrivateProfileInfoModal = ({
   isOpen,
   onClose
 }: {
@@ -45,7 +46,7 @@ const PrivatePhotoInfoModal = ({
       <ModalBackdrop />
       <ModalContent>
         <ModalHeader>
-          <Text size="lg" fontWeight="$bold">PRIVATE PHOTO</Text>
+          <Text size="lg" fontWeight="$bold">PRIVATE PROFILE</Text>
           <ModalCloseButton>
             <Icon as={CloseIcon} />
           </ModalCloseButton>
@@ -55,12 +56,12 @@ const PrivatePhotoInfoModal = ({
             <HStack alignItems="center" space="sm" mb="$2">
               <Ionicons name="eye-off" size={24} color="#8F3BBF" />
               <Text size="md" fontWeight="$semibold" color="$primary900">
-                WHAT ARE PRIVATE PHOTOS?
+                WHAT IS A PRIVATE PROFILE?
               </Text>
             </HStack>
 
             <Text size="sm" color="$textDark700" lineHeight="$lg">
-              PRIVATE PHOTOS WILL ONLY BE VISIBLE TO PEOPLE WHO YOU'VE MATCHED WITH.
+              A PRIVATE PROFILE MEANS ALL YOUR PHOTOS WILL ONLY BE VISIBLE TO PEOPLE YOU'VE MATCHED WITH.
               OTHERS WILL SEE THEM AS BLURRED IMAGES UNTIL YOU BOTH MATCH.
             </Text>
 
@@ -148,7 +149,7 @@ const CameraModal = ({
 }: {
   isOpen: boolean;
   onClose: () => void;
-  onPhotoTaken: (uri: string) => void;
+  onPhotoTaken: (uri: string, file: any) => void;
 }) => {
   const [facing, setFacing] = useState<CameraType>('back');
   const [permission, requestPermission] = useCameraPermissions();
@@ -196,7 +197,13 @@ const CameraModal = ({
           base64: false,
         });
         if (photo) {
-          onPhotoTaken(photo.uri);
+          // Create file object for camera photo
+          const file = {
+            uri: photo.uri,
+            type: 'image/jpeg',
+            name: `camera_photo_${Date.now()}.jpg`
+          };
+          onPhotoTaken(photo.uri, file);
           onClose();
         }
       } catch (error) {
@@ -297,11 +304,11 @@ const PhotoUploader = ({
 const PhotoDisplay = ({
   photo,
   onRemove,
-  isPrivate = false
+  isPrivateProfile = false
 }: {
   photo: PhotoData;
   onRemove: () => void;
-  isPrivate?: boolean;
+  isPrivateProfile?: boolean;
 }) => {
   return (
     <Box
@@ -319,9 +326,9 @@ const PhotoDisplay = ({
           borderRadius: 8,
         }}
         resizeMode="cover"
-        blurRadius={isPrivate ? 10 : 0}
+        blurRadius={isPrivateProfile ? 10 : 0}
       />
-      {isPrivate && (
+      {isPrivateProfile && (
         <Box
           position="absolute"
           top="$0"
@@ -369,8 +376,8 @@ export default function PhotosScreen() {
     email: string;
     status: string;
     occupation: string;
-    lookingFor: string;
     profession: string;
+    lookingFor: string;
     bio: string;
     interests: string;
   }>();
@@ -382,18 +389,6 @@ export default function PhotosScreen() {
   const [isSelectingMain, setIsSelectingMain] = useState(false);
   const [isPrivateProfile, setIsPrivateProfile] = useState(false);
   const [showPrivateInfoModal, setShowPrivateInfoModal] = useState(false);
-
-  // Update all photos' isPrivate property when isPrivateProfile changes
-  useEffect(() => {
-    if (photos.length > 0) {
-      setPhotos(prevPhotos =>
-        prevPhotos.map(photo => ({
-          ...photo,
-          isPrivate: isPrivateProfile
-        }))
-      );
-    }
-  }, [isPrivateProfile]);
 
   const mainPhoto = photos.find(photo => photo.isMain);
   const extraPhotos = photos.filter(photo => !photo.isMain);
@@ -434,9 +429,15 @@ export default function PhotosScreen() {
         quality: 0.8,
       });
 
-
       if (!result.canceled && result.assets?.[0]) {
-        handlePhotoSelected(result.assets[0].uri);
+        const asset = result.assets[0];
+        // Create file object from gallery selection
+        const file = {
+          uri: asset.uri,
+          type: asset.type || 'image/jpeg',
+          name: asset.fileName || `gallery_photo_${Date.now()}.jpg`
+        };
+        handlePhotoSelected(asset.uri, file);
       }
     } catch (error) {
       console.error('Gallery selection error:', error);
@@ -444,16 +445,17 @@ export default function PhotosScreen() {
     }
   };
 
-  const handlePhotoTaken = (uri: string) => {
-    handlePhotoSelected(uri);
+  const handlePhotoTaken = (uri: string, file: any) => {
+    handlePhotoSelected(uri, file);
   };
 
-  const handlePhotoSelected = (uri: string) => {
+  const handlePhotoSelected = (uri: string, file: any) => {
     const newPhoto: PhotoData = {
-      id: Date.now().toString(),
-      uri,
+      file: file,                             // File object for server
+      uri: uri,                               // URI for local display
       isMain: isSelectingMain,
-      isPrivate: isPrivateProfile
+      type: file.type || 'image/jpeg',
+      name: file.name || `photo_${Date.now()}.jpg`
     };
 
     if (isSelectingMain && mainPhoto) {
@@ -468,8 +470,8 @@ export default function PhotosScreen() {
     if (error) setError('');
   };
 
-  const handleRemovePhoto = (photoId: string) => {
-    setPhotos(prev => prev.filter(photo => photo.id !== photoId));
+  const handleRemovePhoto = (photoToRemove: PhotoData) => {
+    setPhotos(prev => prev.filter(photo => photo.uri !== photoToRemove.uri));
   };
 
   const handleContinue = () => {
@@ -488,7 +490,7 @@ export default function PhotosScreen() {
         ...params,
         photoCount: photos.length.toString(),
         photosData: photosData,
-        privateProfile: isPrivateProfile.toString()
+        isPrivateProfile: isPrivateProfile.toString()
       }
     });
   };
@@ -496,8 +498,8 @@ export default function PhotosScreen() {
   return (
     <RegistrationLayout
       title="Your Photos"
-      currentStep={9}
-      totalSteps={10}
+      currentStep={6}
+      totalSteps={7}
     >
       <ScrollView
         flex={1}
@@ -524,7 +526,7 @@ export default function PhotosScreen() {
             ADD A MAIN PHOTO AND UP TO 5 ADDITIONAL PHOTOS
           </Text>
 
-          {/* Private Photo Toggle - Moved to more prominent position */}
+          {/* Private Profile Toggle */}
           <Box mb="$6" alignItems="center">
             <HStack alignItems="center" space="sm">
               <Ionicons
@@ -537,7 +539,7 @@ export default function PhotosScreen() {
                 fontWeight="$semibold"
                 color="$primary900"
               >
-                PRIVATE PHOTO
+                PRIVATE PROFILE
               </Text>
               <Switch
                 size="sm"
@@ -579,8 +581,8 @@ export default function PhotosScreen() {
             {mainPhoto ? (
               <PhotoDisplay
                 photo={mainPhoto}
-                onRemove={() => handleRemovePhoto(mainPhoto.id)}
-                isPrivate={isPrivateProfile}
+                onRemove={() => handleRemovePhoto(mainPhoto)}
+                isPrivateProfile={isPrivateProfile}
               />
             ) : (
               <PhotoUploader isMain onSelect={handleAddMainPhoto} />
@@ -600,10 +602,10 @@ export default function PhotosScreen() {
             <HStack flexWrap="wrap">
               {extraPhotos.map((photo) => (
                 <PhotoDisplay
-                  key={photo.id}
+                  key={photo.uri}
                   photo={photo}
-                  onRemove={() => handleRemovePhoto(photo.id)}
-                  isPrivate={isPrivateProfile}
+                  onRemove={() => handleRemovePhoto(photo)}
+                  isPrivateProfile={isPrivateProfile}
                 />
               ))}
 
@@ -645,7 +647,7 @@ export default function PhotosScreen() {
         onPhotoTaken={handlePhotoTaken}
       />
 
-      <PrivatePhotoInfoModal
+      <PrivateProfileInfoModal
         isOpen={showPrivateInfoModal}
         onClose={() => setShowPrivateInfoModal(false)}
       />

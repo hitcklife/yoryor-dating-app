@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { TouchableOpacity, Image as RNImage, ActivityIndicator, RefreshControl } from "react-native";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { TouchableOpacity, Image as RNImage, ActivityIndicator, RefreshControl, Animated, Dimensions, View } from "react-native";
 import {
   Box,
   Text,
@@ -15,27 +15,14 @@ import {
   AvatarImage,
 } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from 'expo-linear-gradient';
 import { likesService, Like, Match, getProfilePhotoUrl } from "@/services/likes-service";
 import MatchModal from "@/components/ui/home/MatchModal";
 
+const { width: screenWidth } = Dimensions.get('window');
+
 // Define a common interface for both likes and matches
-interface UserItem {
-  id: number;
-  user: {
-    id: number;
-    profile: {
-      first_name: string;
-      last_name: string;
-      age: number;
-      bio: string;
-    };
-    profile_photo?: {
-      medium_url: string;
-      original_url: string;
-    };
-  };
-  status?: 'pending' | 'liked' | 'rejected';
-}
+type UserItem = Like | Match;
 
 // Define the match data structure that MatchModal expects
 interface MatchData {
@@ -85,6 +72,106 @@ interface MatchData {
     }>;
   };
 }
+
+// Skeleton Loading Component
+const SkeletonLoader = ({ count = 5 }: { count?: number }) => {
+  const shimmerTranslateX = useRef(new Animated.Value(-screenWidth)).current;
+
+  useEffect(() => {
+    const shimmerAnimation = Animated.loop(
+      Animated.timing(shimmerTranslateX, {
+        toValue: screenWidth,
+        duration: 1500,
+        useNativeDriver: true,
+      })
+    );
+    shimmerAnimation.start();
+
+    return () => shimmerAnimation.stop();
+  }, [shimmerTranslateX]);
+
+  const SkeletonBox = ({ width, height, borderRadius = 8, mb = 0 }: { width: any, height: number, borderRadius?: number, mb?: number }) => (
+    <View
+      style={{
+        width,
+        height,
+        backgroundColor: '#F8E7F8', // Light purple base
+        borderRadius,
+        marginBottom: mb,
+        overflow: 'hidden',
+        position: 'relative',
+      }}
+    >
+      <Animated.View
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          transform: [{ translateX: shimmerTranslateX }],
+        }}
+      >
+        <LinearGradient
+          colors={[
+            'transparent',                 // Fully transparent left edge
+            'rgba(255, 107, 157, 0.05)',   // Very faint pink
+            'rgba(255, 107, 157, 0.2)',    // Light pink
+            'rgba(255, 107, 157, 0.4)',    // Bright pink center
+            'rgba(255, 107, 157, 0.2)',    // Light pink
+            'rgba(255, 107, 157, 0.05)',   // Very faint pink
+            'transparent'                  // Fully transparent right edge
+          ]}
+          locations={[0, 0.1, 0.3, 0.5, 0.7, 0.9, 1]}
+          start={[0, 0]}
+          end={[1, 0]}
+          style={{
+            width: screenWidth,
+            height: '100%',
+          }}
+        />
+      </Animated.View>
+    </View>
+  );
+
+  return (
+    <VStack space="sm" pb="$6">
+      {[...Array(count)].map((_, index) => (
+        <Box
+          key={index}
+          bg="white"
+          p="$4"
+          mb="$3"
+          borderRadius="$xl"
+          shadowColor="#000"
+          shadowOffset={{ width: 0, height: 2 }}
+          shadowOpacity={0.1}
+          shadowRadius={4}
+          elevation={2}
+        >
+          <VStack space="md">
+            <HStack space="md" alignItems="center">
+              {/* Profile Image Skeleton */}
+              <SkeletonBox width={60} height={60} borderRadius={30} />
+
+              {/* Name and Location Skeleton */}
+              <VStack flex={1} space="xs">
+                <SkeletonBox width="70%" height={20} borderRadius={10} />
+                <SkeletonBox width="50%" height={16} borderRadius={8} />
+              </VStack>
+
+              {/* Action Buttons Skeleton */}
+              <HStack space="sm">
+                <SkeletonBox width={40} height={40} borderRadius={20} />
+                <SkeletonBox width={40} height={40} borderRadius={20} />
+              </HStack>
+            </HStack>
+          </VStack>
+        </Box>
+      ))}
+    </VStack>
+  );
+};
 
 type LikeItemProps = {
   item: UserItem;
@@ -232,6 +319,10 @@ export default function LikesScreen() {
   const [matchesPage, setMatchesPage] = useState(1);
   const [hasMoreLikes, setHasMoreLikes] = useState(true);
   const [hasMoreMatches, setHasMoreMatches] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  
+  // Ref to track last scroll position to prevent duplicate calls
+  const lastScrollY = useRef(0);
 
   // Match modal state
   const [matchModalVisible, setMatchModalVisible] = useState(false);
@@ -245,18 +336,25 @@ export default function LikesScreen() {
 
       if (response && response.status === 'success') {
         const newLikes = response.data.likes;
+        const pagination = response.data.pagination;
 
         if (refresh) {
           setLikes(newLikes);
+          setLikesPage(pagination.current_page);
         } else {
           setLikes(prev => [...prev, ...newLikes]);
+          setLikesPage(pagination.current_page);
         }
 
-        setLikesPage(response.data.pagination.current_page);
-        setHasMoreLikes(response.data.pagination.current_page < response.data.pagination.last_page);
+        // Set hasMoreLikes to false immediately if we're at the last page or if there are no results
+        setHasMoreLikes(pagination.current_page < pagination.last_page && pagination.total > 0);
+      } else {
+        // If response is not successful, stop trying to load more
+        setHasMoreLikes(false);
       }
     } catch (error) {
       console.error('Error fetching likes:', error);
+      setHasMoreLikes(false);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -271,18 +369,25 @@ export default function LikesScreen() {
 
       if (response && response.status === 'success') {
         const newMatches = response.data.matches;
+        const pagination = response.data.pagination;
 
         if (refresh) {
           setMatches(newMatches);
+          setMatchesPage(pagination.current_page);
         } else {
           setMatches(prev => [...prev, ...newMatches]);
+          setMatchesPage(pagination.current_page);
         }
 
-        setMatchesPage(response.data.pagination.current_page);
-        setHasMoreMatches(response.data.pagination.current_page < response.data.pagination.last_page);
+        // Set hasMoreMatches to false immediately if we're at the last page or if there are no results
+        setHasMoreMatches(pagination.current_page < pagination.last_page && pagination.total > 0);
+      } else {
+        // If response is not successful, stop trying to load more
+        setHasMoreMatches(false);
       }
     } catch (error) {
       console.error('Error fetching matches:', error);
+      setHasMoreMatches(false);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -307,14 +412,16 @@ export default function LikesScreen() {
 
   // Function to load more data
   const handleLoadMore = useCallback(() => {
-    if (isLoading) return;
+    if (isLoading || isLoadingMore) return;
 
-    if (activeTab === 'likes' && hasMoreLikes) {
-      fetchLikes(likesPage + 1);
-    } else if (activeTab === 'matches' && hasMoreMatches) {
-      fetchMatches(matchesPage + 1);
+    if (activeTab === 'likes' && hasMoreLikes && likesPage > 0) {
+      setIsLoadingMore(true);
+      fetchLikes(likesPage + 1).finally(() => setIsLoadingMore(false));
+    } else if (activeTab === 'matches' && hasMoreMatches && matchesPage > 0) {
+      setIsLoadingMore(true);
+      fetchMatches(matchesPage + 1).finally(() => setIsLoadingMore(false));
     }
-  }, [activeTab, fetchLikes, fetchMatches, hasMoreLikes, hasMoreMatches, isLoading, likesPage, matchesPage]);
+  }, [activeTab, fetchLikes, fetchMatches, hasMoreLikes, hasMoreMatches, isLoading, isLoadingMore, likesPage, matchesPage]);
 
   // Function to convert Like response to MatchData format
   const convertLikeResponseToMatchData = (likeResponse: any, likedUser: Like): MatchData => {
@@ -488,7 +595,10 @@ export default function LikesScreen() {
         {/* Tabs */}
         <Box px="$4" pb="$2">
           <HStack space="md">
-            <TouchableOpacity onPress={() => setActiveTab('likes')}>
+            <TouchableOpacity onPress={() => {
+              setActiveTab('likes');
+              lastScrollY.current = 0; // Reset scroll position tracking
+            }}>
               <Box
                 pb="$2"
                 borderBottomWidth={2}
@@ -503,7 +613,10 @@ export default function LikesScreen() {
                 </Text>
               </Box>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setActiveTab('matches')}>
+            <TouchableOpacity onPress={() => {
+              setActiveTab('matches');
+              lastScrollY.current = 0; // Reset scroll position tracking
+            }}>
               <Box
                 pb="$2"
                 borderBottomWidth={2}
@@ -537,7 +650,11 @@ export default function LikesScreen() {
           onMomentumScrollEnd={({ nativeEvent }) => {
             const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
             const paddingToBottom = 20;
-            if (layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom) {
+            const isNearBottom = layoutMeasurement.height + contentOffset.y >= contentSize.height - paddingToBottom;
+            
+            // Only trigger if we're near the bottom and have scrolled down significantly
+            if (isNearBottom && contentOffset.y > lastScrollY.current + 50) {
+              lastScrollY.current = contentOffset.y;
               handleLoadMore();
             }
           }}
@@ -548,13 +665,15 @@ export default function LikesScreen() {
                 likes.map((like) => (
                   <LikeItem
                     key={like.id}
-                    item={like}
+                    item={like as any}
                     onLike={handleLike}
                     onDislike={handleDislike}
                     expanded={expandedItems[like.user.id] || false}
                     onToggleExpand={() => toggleExpand(like.user.id)}
                   />
                 ))
+              ) : isLoading ? (
+                <SkeletonLoader count={5} />
               ) : (
                 <Box
                   alignItems="center"
@@ -587,7 +706,7 @@ export default function LikesScreen() {
                 matches.map((match) => (
                   <LikeItem
                     key={match.id}
-                    item={match}
+                    item={match as any}
                     onLike={() => {}}
                     onDislike={() => {}}
                     expanded={expandedItems[match.user.id] || false}
@@ -595,6 +714,8 @@ export default function LikesScreen() {
                     isMatch={true}
                   />
                 ))
+              ) : isLoading ? (
+                <SkeletonLoader count={5} />
               ) : (
                 <Box
                   alignItems="center"
@@ -624,10 +745,8 @@ export default function LikesScreen() {
               )
             )}
 
-            {isLoading && (
-              <Box alignItems="center" py="$4">
-                <ActivityIndicator size="large" color="#FF6B9D" />
-              </Box>
+            {isLoading && ((activeTab === 'likes' && likes.length > 0) || (activeTab === 'matches' && matches.length > 0)) && (
+              <SkeletonLoader count={3} />
             )}
           </VStack>
         </ScrollView>

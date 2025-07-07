@@ -42,6 +42,8 @@ interface CallScreenProps {
   userAvatar: string;
   isVideoCall: boolean;
   onEndCall: () => void;
+  meetingId?: string;
+  token?: string;
 }
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
@@ -74,6 +76,17 @@ const VideoCallMeeting: React.FC<{
     meetingIdRef.current = meetingId;
   });
 
+  // Call state (moved before callbacks that use them)
+  const [joined, setJoined] = useState(false);
+  const [remoteParticipantId, setRemoteParticipantId] = useState<string | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
+  const [isCameraOff, setIsCameraOff] = useState(!isVideoCall);
+  const [isFrontCamera, setIsFrontCamera] = useState(true);
+  const [callStatus, setCallStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting');
+  const [callDuration, setCallDuration] = useState(0);
+  const [showControls, setShowControls] = useState(true);
+
   // Memoized event handlers to prevent recreating on every render
   const handleMeetingJoined = useCallback(() => {
     if (!mountedRef.current || joinedRef.current) return;
@@ -99,7 +112,7 @@ const VideoCallMeeting: React.FC<{
       console.log('🚨 Unexpected meeting left - may be a connection issue');
       // Give time for potential reconnection
       setTimeout(() => {
-        if (mountedRef.current && callStatus !== 'ended' && !hasLeftRef.current) {
+        if (mountedRef.current && (callStatus === 'connecting' || callStatus === 'connected') && !hasLeftRef.current) {
           console.log('🔄 No reconnection after 2 seconds, ending call');
           hasLeftRef.current = true;
           setCallStatus('ended');
@@ -118,7 +131,7 @@ const VideoCallMeeting: React.FC<{
     
     console.log('👥 Participant joined:', participant.id, participant.displayName || 'Unknown');
     setRemoteParticipantId(participant.id);
-    if (callStatus !== 'connected') {
+    if (callStatus === 'connecting') {
       setCallStatus('connected');
     }
   }, [callStatus]);
@@ -169,16 +182,7 @@ const VideoCallMeeting: React.FC<{
     onError: handleError,
   });
 
-  // Call state
-  const [joined, setJoined] = useState(false);
-  const [remoteParticipantId, setRemoteParticipantId] = useState<string | null>(null);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true);
-  const [isCameraOff, setIsCameraOff] = useState(!isVideoCall);
-  const [isFrontCamera, setIsFrontCamera] = useState(true);
-  const [callStatus, setCallStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting');
-  const [callDuration, setCallDuration] = useState(0);
-  const [showControls, setShowControls] = useState(true);
+
 
   // Animations
   const fadeAnim = useRef(new Animated.Value(1)).current;
@@ -746,37 +750,28 @@ const CallScreen: React.FC<CallScreenProps> = ({
   userAvatar,
   isVideoCall,
   onEndCall,
+  meetingId: propMeetingId,
+  token: propToken,
 }) => {
-  const [meetingId, setMeetingId] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [meetingId, setMeetingId] = useState<string | null>(propMeetingId || null);
+  const [token, setToken] = useState<string | null>(propToken || null);
+  const [loading, setLoading] = useState(!propMeetingId || !propToken);
 
   useEffect(() => {
-    const initializeCall = async () => {
-      try {
-        // Initialize VideoSDK service
-        await videoSDKService.initialize();
+    // If meeting ID and token are provided via props, use them directly
+    if (propMeetingId && propToken) {
+      console.log('✅ Using provided meeting ID and token:', propMeetingId);
+      setMeetingId(propMeetingId);
+      setToken(propToken);
+      setLoading(false);
+      return;
+    }
 
-        // Create a meeting using the chat ID as custom room ID
-        console.log('Creating/getting meeting for chat:', chatId);
-        const meetingId = await videoSDKService.createMeetingForChat(chatId);
-        console.log('✅ Meeting ID for chat:', meetingId);
-        setMeetingId(meetingId);
-
-        // Get token
-        const videoToken = await videoSDKService.getToken();
-        setToken(videoToken);
-
-        setLoading(false);
-      } catch (error) {
-        console.error('Error initializing call:', error);
-        Alert.alert('Call Failed', 'Failed to start the call. Please try again.');
-        onEndCall();
-      }
-    };
-
-    initializeCall();
-  }, [chatId]);
+    // If no meeting ID/token provided, we can't start the call
+    console.error('❌ No meeting ID or token provided for call');
+    Alert.alert('Call Error', 'Missing call information. Please try again.');
+    onEndCall();
+  }, [chatId, propMeetingId, propToken, onEndCall]);
 
   if (loading || !meetingId || !token) {
     return (

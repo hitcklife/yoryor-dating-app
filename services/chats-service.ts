@@ -203,7 +203,7 @@ export function getProfilePhotoUrl(user: OtherUser | null, useHighRes: boolean =
   if (user.profile_photo) {
     const photoUrl = useHighRes
       ? user.profile_photo.original_url
-      : user.profile_photo.medium_url;
+      : user.profile_photo.thumbnail_url || user.profile_photo.medium_url;
 
     if (photoUrl) {
       return getAssetUrl(photoUrl);
@@ -260,13 +260,77 @@ class ChatsService {
 
   async getChats(page: number = 1): Promise<ChatsResponse | null> {
     try {
+      // Ensure we have the current user ID
+      await this.initializeCurrentUser();
+      
       const isConnected = await NetInfo.fetch().then((state: any) => state.isConnected);
 
       if (!isConnected) {
         console.log('No internet connection, fetching from SQLite...');
-        const offlineChats = await sqliteService.getChats();
+        try {
+          const offlineChats = await sqliteService.getChats();
 
+          if (offlineChats && offlineChats.length > 0) {
+            console.log(`Returning ${offlineChats.length} offline chats`);
+            return {
+              status: 'success',
+              data: {
+                chats: offlineChats,
+                pagination: {
+                  total: offlineChats.length,
+                  per_page: CONFIG.APP.defaultPageSize,
+                  current_page: 1,
+                  last_page: 1
+                }
+              }
+            };
+          }
+        } catch (sqliteError) {
+          console.error('Error fetching offline chats:', sqliteError);
+          // Continue to try API call if offline data fails
+        }
+      }
+
+      console.log('Making API call to fetch chats...');
+      const response = await apiClient.chats.getAll(page, CONFIG.APP.defaultPageSize);
+
+      console.log('API response status:', response.status);
+      console.log('API response data:', response.data);
+
+      if (response.status === 'success' && response.data) {
+        const chatsData = response.data;
+        console.log(`Received ${chatsData.chats?.length || 0} chats from API`);
+
+        // Store chats in SQLite for offline access
+        if (chatsData.chats && chatsData.chats.length > 0) {
+          try {
+            // Check if SQLite service is ready before storing
+            if (sqliteService.isServiceInitialized()) {
+              await sqliteService.storeChats(chatsData.chats);
+              console.log('Chats stored in SQLite successfully');
+            } else {
+              console.log('SQLite service not ready, skipping storage');
+            }
+          } catch (sqliteError) {
+            console.error('Error storing chats in SQLite:', sqliteError);
+            // Don't throw error - API data is still valid
+          }
+        }
+
+        return response as ChatsResponse;
+      }
+
+      console.log('API response was not successful, returning null');
+      return null;
+    } catch (error) {
+      console.error('Error fetching chats:', error);
+
+      // Try to get offline data if API call fails
+      try {
+        console.log('API call failed, trying offline data...');
+        const offlineChats = await sqliteService.getChats();
         if (offlineChats && offlineChats.length > 0) {
+          console.log(`Returning ${offlineChats.length} offline chats as fallback`);
           return {
             status: 'success',
             data: {
@@ -280,32 +344,15 @@ class ChatsService {
             }
           };
         }
-      }
-
-      const response = await apiClient.chats.getAll(page, CONFIG.APP.defaultPageSize);
-
-      if (response.status === 'success') {
-        const chatsData = response.data;
-
-        // Store chats in SQLite for offline access
-        await sqliteService.storeChats(chatsData.chats);
-
-        return response as ChatsResponse;
-      }
-
-      return null;
-    } catch (error) {
-      console.error('Error fetching chats:', error);
-
-      // Try to get offline data if API call fails
-      const offlineChats = await sqliteService.getChats();
-      if (offlineChats && offlineChats.length > 0) {
+      } catch (sqliteError) {
+        console.error('Error fetching offline chats as fallback:', sqliteError);
+        // Return empty response instead of throwing error
         return {
           status: 'success',
           data: {
-            chats: offlineChats,
+            chats: [],
             pagination: {
-              total: offlineChats.length,
+              total: 0,
               per_page: CONFIG.APP.defaultPageSize,
               current_page: 1,
               last_page: 1
@@ -314,7 +361,19 @@ class ChatsService {
         };
       }
 
-      throw error;
+      // If we get here, return empty response
+      return {
+        status: 'success',
+        data: {
+          chats: [],
+          pagination: {
+            total: 0,
+            per_page: CONFIG.APP.defaultPageSize,
+            current_page: 1,
+            last_page: 1
+          }
+        }
+      };
     }
   }
 
@@ -339,17 +398,22 @@ class ChatsService {
 
         console.log('API response status:', response.status);
 
-        if (response.status === 'success') {
+        if (response.status === 'success' && response.data) {
           const chatData = response.data;
           
-          // Extract messages from the nested structure
+          console.log('Raw API response data:', chatData);
+          
+          // Extract messages from the nested structure - API returns messages.data
           const messagesArray = chatData.messages?.data || [];
-          const messagePagination = chatData.pagination || {
-            total: chatData.messages?.total || 0,
-            per_page: chatData.messages?.per_page || 20,
-            current_page: chatData.messages?.current_page || 1,
-            last_page: chatData.messages?.last_page || 1
+          const messagePagination = chatData.messages?.pagination || {
+            total: 0,
+            per_page: 20,
+            current_page: 1,
+            last_page: 1
           };
+
+          console.log('Extracted messages array:', messagesArray.length);
+          console.log('Message pagination:', messagePagination);
 
           // Add ownership to messages based on current user ID
           const messagesWithOwnership = addMessageOwnership(messagesArray, currentUserId);
@@ -357,7 +421,14 @@ class ChatsService {
           console.log('Processed API messages:', messagesWithOwnership.length);
 
           // Store data in SQLite for offline access
-          await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
+          if (chatData.chat) {
+            try {
+              await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
+              console.log('Chat details stored in SQLite successfully');
+            } catch (sqliteError) {
+              console.error('Error storing chat details in SQLite:', sqliteError);
+            }
+          }
 
           return {
             status: 'success',
@@ -467,7 +538,7 @@ class ChatsService {
         };
 
         // Store message in SQLite
-        await sqliteService.storeMessage(messageWithOwnership);
+        await sqliteService.saveMessage(messageWithOwnership);
 
         return {
           status: response.status,
@@ -513,7 +584,7 @@ class ChatsService {
         };
 
         // Store message in SQLite
-        await sqliteService.storeMessage(messageWithOwnership);
+        await sqliteService.saveMessage(messageWithOwnership);
 
         return {
           status: response.status,
@@ -539,43 +610,80 @@ class ChatsService {
       const nextPage = currentPage + 1;
       console.log(`Loading more messages for chat ${chatId}, page ${nextPage}`);
       
-      // Use the same getChatDetails method but with the next page
-      const response = await this.getChatDetails(chatId, nextPage);
-      
-      if (response?.status === 'success') {
-        return response;
+      const currentUserId = await this.getCurrentUser();
+      if (!currentUserId) {
+        throw new Error('Current user ID not found');
       }
 
+      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
+
+      if (isConnected) {
+        console.log('Making API call for more messages...');
+        const response = await apiClient.chats.getById(chatId, nextPage, CONFIG.APP.chatMessagesPageSize);
+
+        console.log('API response status:', response.status);
+
+        if (response.status === 'success' && response.data) {
+          const chatData = response.data;
+          
+          // Extract messages from the nested structure - API returns messages.data
+          const messagesArray = chatData.messages?.data || [];
+          const messagePagination = chatData.messages?.pagination || {
+            total: 0,
+            per_page: 20,
+            current_page: 1,
+            last_page: 1
+          };
+
+          // Add ownership to messages based on current user ID
+          const messagesWithOwnership = addMessageOwnership(messagesArray, currentUserId);
+
+          console.log('Processed API messages for loadMore:', messagesWithOwnership.length);
+
+          // Store new messages in SQLite for offline access
+          if (messagesWithOwnership.length > 0) {
+            await sqliteService.saveMessages(chatId, messagesWithOwnership);
+          }
+
+          return {
+            status: 'success',
+            data: {
+              chat: chatData.chat,
+              messages: messagesWithOwnership,
+              pagination: {
+                total: messagePagination.total,
+                loaded: messagesWithOwnership.length,
+                has_more: messagePagination.current_page < messagePagination.last_page,
+                current_page: messagePagination.current_page,
+                last_page: messagePagination.last_page,
+                per_page: messagePagination.per_page
+              }
+            }
+          };
+        }
+      }
+
+      // Fallback to SQLite
+      const offlineMessages = await sqliteService.getMessagesByChatId(chatId, CONFIG.APP.chatMessagesPageSize);
+      const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
+
       return {
-        status: 'error',
-        data: { chat: null, messages: [], pagination: null }
+        status: 'success',
+        data: {
+          chat: null,
+          messages: messagesWithOwnership,
+          pagination: {
+            total: messagesWithOwnership.length,
+            loaded: messagesWithOwnership.length,
+            has_more: false,
+            current_page: 1,
+            last_page: 1,
+            per_page: messagesWithOwnership.length
+          }
+        }
       };
     } catch (error) {
       console.error('Error loading more messages:', error);
-
-      // Fallback to SQLite
-      const currentUserId = await this.getCurrentUser();
-      if (currentUserId) {
-        const offlineMessages = await sqliteService.getMessagesByChatId(chatId, CONFIG.APP.chatMessagesPageSize);
-        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
-
-        return {
-          status: 'success',
-          data: {
-            chat: null,
-            messages: messagesWithOwnership,
-            pagination: {
-              total: messagesWithOwnership.length,
-              loaded: messagesWithOwnership.length,
-              has_more: false,
-              current_page: 1,
-              last_page: 1,
-              per_page: messagesWithOwnership.length
-            }
-          }
-        };
-      }
-
       throw error;
     }
   }
@@ -617,7 +725,7 @@ class ChatsService {
         };
 
         // Update message in SQLite
-        await sqliteService.storeMessage(messageWithOwnership);
+        await sqliteService.saveMessage(messageWithOwnership);
 
         return {
           status: response.status,
@@ -814,8 +922,24 @@ export const chatsService = new ChatsService();
 // Initialize the service
 export async function initializeChatsService(): Promise<void> {
   try {
-    // Force add missing columns if needed
-    await sqliteService.forceAddMissingColumns();
+    // Check if SQLite service is already initialized
+    if (!sqliteService.isServiceInitialized()) {
+      console.log('SQLite service not initialized, waiting for initialization...');
+      
+      // Wait a bit for the service to initialize
+      let attempts = 0;
+      const maxAttempts = 10;
+      
+      while (!sqliteService.isServiceInitialized() && attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+      }
+      
+      if (!sqliteService.isServiceInitialized()) {
+        console.error('SQLite service failed to initialize after waiting');
+        throw new Error('SQLite service initialization timeout');
+      }
+    }
     
     console.log('Chats service initialized successfully');
   } catch (error) {

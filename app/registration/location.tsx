@@ -163,8 +163,8 @@ export default function LocationScreen() {
     return (
       <RegistrationLayout
         title="Your Location"
-        currentStep={10}
-        totalSteps={10}
+        currentStep={7}
+        totalSteps={7}
       >
         <Box flex={1} justifyContent="center" alignItems="center">
           <Spinner size="large" color="$primary600" />
@@ -180,158 +180,183 @@ export default function LocationScreen() {
     <>
       <RegistrationLayout
         title="Your Location"
-        currentStep={10}
-        totalSteps={10}
+        currentStep={7}
+        totalSteps={7}
       >
         <KeyboardAvoidingView
           flex={1}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
         >
-          <ScrollView
-            flex={1}
-            contentContainerStyle={{ flexGrow: 1 }}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-            <Box flex={1} px="$6" py="$8">
-              <Text
-                fontSize="$3xl"
-                fontWeight="$bold"
-                mb="$6"
-                textAlign="center"
-                color="$primary700"
-              >
-                Where Are You From?
-              </Text>
+          <Box flex={1}>
+            <ScrollView
+              flex={1}
+              contentContainerStyle={{ flexGrow: 1 }}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Box flex={1} px="$6" py="$8">
+                <Text
+                  fontSize="$3xl"
+                  fontWeight="$bold"
+                  mb="$6"
+                  textAlign="center"
+                  color="$primary700"
+                >
+                  Where Are You From?
+                </Text>
 
-              <VStack space="lg">
-                {/* Country Selection */}
-                <VStack space="sm">
-                  <Text fontSize="$sm" color="$primary700" fontWeight="$medium">
-                    Country
-                  </Text>
-                  <Pressable
-                    onPress={() => setShowCountryPicker(true)}
-                    borderWidth="$2"
-                    borderColor="$primary300"
-                    borderRadius="$lg"
-                    height={48}
-                    px="$4"
-                    backgroundColor="$backgroundLight0"
-                    flexDirection="row"
-                    alignItems="center"
-                    justifyContent="space-between"
-                  >
-                    <HStack alignItems="center" space="sm">
-                      {selectedCountry && (
-                        <Text fontSize="$lg">{selectedCountry.flag}</Text>
-                      )}
-                      <Text
-                        color={selectedCountry ? "$primary700" : "$textLight400"}
+                <VStack space="lg">
+                  {/* Country Selection */}
+                  <VStack space="sm">
+                    <Text fontSize="$sm" color="$primary700" fontWeight="$medium">
+                      Country
+                    </Text>
+                    <Pressable
+                      onPress={() => setShowCountryPicker(true)}
+                      borderWidth="$2"
+                      borderColor="$primary300"
+                      borderRadius="$lg"
+                      height={48}
+                      px="$4"
+                      backgroundColor="$backgroundLight0"
+                      flexDirection="row"
+                      alignItems="center"
+                      justifyContent="space-between"
+                    >
+                      <HStack alignItems="center" space="sm">
+                        {selectedCountry && (
+                          <Text fontSize="$lg">{selectedCountry.flag}</Text>
+                        )}
+                        <Text
+                          color={selectedCountry ? "$primary700" : "$textLight400"}
+                          fontSize="$md"
+                        >
+                          {selectedCountry ? selectedCountry.name : 'Select your country'}
+                        </Text>
+                      </HStack>
+                      <ChevronDownIcon size="md" color="$primary300" />
+                    </Pressable>
+                  </VStack>
+
+                  {/* State/Province Input */}
+                  <VStack space="sm">
+                    <Text fontSize="$sm" color="$primary700" fontWeight="$medium">
+                      State/Province
+                    </Text>
+                    <Input
+                      borderWidth="$2"
+                      borderColor="$primary300"
+                      borderRadius="$lg"
+                      height={48}
+                      backgroundColor="$backgroundLight0"
+                    >
+                      <InputField
+                        placeholder="Enter your state or province (if applicable)"
+                        value={state}
+                        onChangeText={(text) => {
+                          setState(text);
+                          if (error) setError('');
+                        }}
+                        color="$primary700"
                         fontSize="$md"
-                      >
-                        {selectedCountry ? selectedCountry.name : 'Select your country'}
-                      </Text>
-                    </HStack>
-                    <ChevronDownIcon size="md" color="$primary300" />
-                  </Pressable>
+                      />
+                    </Input>
+                  </VStack>
+
+                  {/* Region Input */}
+                  <VStack space="sm">
+                    <Text fontSize="$sm" color="$primary700" fontWeight="$medium">
+                      Region
+                    </Text>
+                    <Input
+                      borderWidth="$2"
+                      borderColor="$primary300"
+                      borderRadius="$lg"
+                      height={48}
+                      backgroundColor="$backgroundLight0"
+                    >
+                      <InputField
+                        placeholder="Enter your region (if applicable)"
+                        value={region}
+                        onChangeText={(text) => {
+                          setRegion(text);
+                          if (error) setError('');
+                        }}
+                        color="$primary700"
+                        fontSize="$md"
+                      />
+                    </Input>
+                  </VStack>
+
+                  {/* City Input */}
+                  <VStack space="sm">
+                    <Text fontSize="$sm" color="$primary700" fontWeight="$medium">
+                      City
+                    </Text>
+                    <Input
+                      borderWidth="$2"
+                      borderColor={error ? "$error600" : "$primary300"}
+                      borderRadius="$lg"
+                      height={48}
+                      backgroundColor="$backgroundLight0"
+                    >
+                      <InputField
+                        placeholder="Enter your city"
+                        value={city}
+                        onChangeText={(text) => {
+                          setCity(text);
+                          if (error) setError('');
+                        }}
+                        color="$primary700"
+                        fontSize="$md"
+                      />
+                    </Input>
+                  </VStack>
+
+                  {error && (
+                    <Text
+                      fontSize="$sm"
+                      color="$error600"
+                      textAlign="center"
+                      mt="$2"
+                    >
+                      {error}
+                    </Text>
+                  )}
+
+                  {/* Spacer for scroll content */}
+                  <Box h="$20" />
                 </VStack>
+              </Box>
+            </ScrollView>
 
-                {/* State/Province Input */}
-                <VStack space="sm">
-                  <Text fontSize="$sm" color="$primary700" fontWeight="$medium">
-                    State/Province
-                  </Text>
-                  <Input
-                    borderWidth="$2"
-                    borderColor="$primary300"
-                    borderRadius="$lg"
-                    height={48}
-                    backgroundColor="$backgroundLight0"
-                  >
-                    <InputField
-                      placeholder="Enter your state or province (if applicable)"
-                      value={state}
-                      onChangeText={(text) => {
-                        setState(text);
-                        if (error) setError('');
-                      }}
-                      color="$primary700"
-                      fontSize="$md"
-                    />
-                  </Input>
-                </VStack>
-
-                {/* Region Input */}
-                <VStack space="sm">
-                  <Text fontSize="$sm" color="$primary700" fontWeight="$medium">
-                    Region
-                  </Text>
-                  <Input
-                    borderWidth="$2"
-                    borderColor="$primary300"
-                    borderRadius="$lg"
-                    height={48}
-                    backgroundColor="$backgroundLight0"
-                  >
-                    <InputField
-                      placeholder="Enter your region (if applicable)"
-                      value={region}
-                      onChangeText={(text) => {
-                        setRegion(text);
-                        if (error) setError('');
-                      }}
-                      color="$primary700"
-                      fontSize="$md"
-                    />
-                  </Input>
-                </VStack>
-
-                {/* City Input */}
-                <VStack space="sm">
-                  <Text fontSize="$sm" color="$primary700" fontWeight="$medium">
-                    City
-                  </Text>
-                  <Input
-                    borderWidth="$2"
-                    borderColor={error ? "$error600" : "$primary300"}
-                    borderRadius="$lg"
-                    height={48}
-                    backgroundColor="$backgroundLight0"
-                  >
-                    <InputField
-                      placeholder="Enter your city"
-                      value={city}
-                      onChangeText={(text) => {
-                        setCity(text);
-                        if (error) setError('');
-                      }}
-                      color="$primary700"
-                      fontSize="$md"
-                    />
-                  </Input>
-                </VStack>
-
-                {error && (
-                  <Text
-                    fontSize="$sm"
-                    color="$error600"
-                    textAlign="center"
-                    mt="$2"
-                  >
-                    {error}
-                  </Text>
-                )}
-
-                <Button
-                  title="Continue"
-                  onPress={handleContinue}
-                  isDisabled={!selectedCountry || !city.trim()}
-                  className="mt-4"
-                />
-              </VStack>
+            {/* Fixed Continue Button */}
+            <Box
+              position="absolute"
+              bottom="$0"
+              left="$0"
+              right="$0"
+              bg="$primaryLight50"
+              px="$6"
+              py="$4"
+              borderTopWidth="$1"
+              borderTopColor="$borderLight200"
+              shadowColor="$shadowColor"
+              shadowOffset={{ width: 0, height: -2 }}
+              shadowOpacity={0.1}
+              shadowRadius={4}
+              elevation={5}
+            >
+              <Button
+                title="Continue"
+                onPress={handleContinue}
+                isDisabled={!selectedCountry || !city.trim()}
+                size="lg"
+                variant="solid"
+              />
             </Box>
-          </ScrollView>
+          </Box>
         </KeyboardAvoidingView>
       </RegistrationLayout>
 

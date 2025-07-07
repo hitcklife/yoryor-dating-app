@@ -4,6 +4,7 @@ import { Box, Text, HStack, VStack, Image, Avatar, AvatarImage, Badge, BadgeText
 import { Ionicons } from "@expo/vector-icons";
 import { Message } from "@/services/chats-service";
 import { getMessageReadStatus } from '@/services/chats-service';
+import CallMessageItem from './CallMessageItem';
 
 interface MessageItemProps {
   message: Message;
@@ -15,6 +16,7 @@ interface MessageItemProps {
   onEdit?: (message: Message) => void;
   onDelete?: (messageId: number) => void;
   onReply?: (message: Message) => void;
+  onJoinCall?: (callData: any) => void;
   replyToMessage?: Message | null; // For displaying replied message context
   currentUserId: number;
   otherUserId: number;
@@ -44,16 +46,18 @@ const MessageItem: React.FC<MessageItemProps> = ({
   onEdit = () => {},
   onDelete = () => {},
   onReply = () => {},
+  onJoinCall = () => {},
   replyToMessage = null,
   currentUserId,
   otherUserId,
 }) => {
-  const isMe = message.is_mine;
+  const isMe = message.is_mine || false;
   const isVoiceMessage = message.message_type === 'voice';
   const isImageMessage = message.message_type === 'image';
   const isVideoMessage = message.message_type === 'video';
+  const isCallMessage = message.message_type === 'call';
   const canEdit = isMe && message.message_type === 'text' && !message.deleted_at;
-  const canDelete = isMe && !message.deleted_at;
+  const canDelete = isMe && message.deleted_at === null;
   
   const [showFullImage, setShowFullImage] = useState(false);
   const [showContextMenu, setShowContextMenu] = useState(false);
@@ -255,6 +259,18 @@ const MessageItem: React.FC<MessageItemProps> = ({
     );
   };
 
+  // If it's a call message, use the special call message component
+  if (isCallMessage) {
+    return (
+      <CallMessageItem
+        message={message}
+        isMine={isMe}
+        formatMessageTime={formatMessageTime}
+        onJoinCall={onJoinCall}
+      />
+    );
+  }
+
   return (
     <>
       <Pressable onLongPress={handleLongPress}>
@@ -273,7 +289,7 @@ const MessageItem: React.FC<MessageItemProps> = ({
           
           <HStack justifyContent="space-between" alignItems="center" mt="$1">
             <HStack alignItems="center">
-              {message.is_edited && (
+              {message.is_edited === true && (
                 <Text
                   color={isMe ? "#EDE9FE" : "#6B7280"}
                   fontSize="$xs"
@@ -336,14 +352,12 @@ const MessageItem: React.FC<MessageItemProps> = ({
             elevation={5}
             minWidth={120}
           >
-            {onReply && (
-              <Pressable onPress={handleReply}>
-                <HStack alignItems="center" space="sm" p="$3">
-                  <Ionicons name="arrow-undo" size={16} color="#6B7280" />
-                  <Text color="#1F2937" fontSize="$sm">Reply</Text>
-                </HStack>
-              </Pressable>
-            )}
+            <Pressable onPress={handleReply}>
+              <HStack alignItems="center" space="sm" p="$3">
+                <Ionicons name="arrow-undo" size={16} color="#6B7280" />
+                <Text color="#1F2937" fontSize="$sm">Reply</Text>
+              </HStack>
+            </Pressable>
             
             {canEdit && (
               <Pressable onPress={handleEdit}>

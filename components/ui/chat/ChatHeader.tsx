@@ -1,8 +1,9 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { Pressable, Animated } from "react-native";
 import { Box, HStack, VStack, Text, Avatar, AvatarImage } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
 import { Chat } from "@/services/chats-service";
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface ChatHeaderProps {
   chat: Chat;
@@ -158,10 +159,42 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   onOpenOptions,
   getProfilePhotoUrl,
 }) => {
+  const insets = useSafeAreaInsets();
+  // Memoize user data and fallback values
+  const userData = useMemo(() => {
+    const otherUser = chat?.other_user || {};
+    const profile = otherUser.profile || {};
+    return {
+      name: profile.first_name && profile.last_name
+        ? `${profile.first_name} ${profile.last_name}`
+        : 'User',
+      photoUrl: getProfilePhotoUrl(otherUser) || 'https://via.placeholder.com/50',
+      isOnline: isUserOnline(otherUser.last_active_at),
+      lastActive: otherUser.last_active_at
+        ? formatLastActive(otherUser.last_active_at)
+        : 'Last seen recently',
+    };
+  }, [chat, getProfilePhotoUrl, isUserOnline, formatLastActive]);
+
+  // Memoize status text
+  const statusText = useMemo(() => {
+    if (isTyping && typingUser) {
+      return { type: 'typing' as const, text: null };
+    }
+    if (isLoadingFromAPI) {
+      return { type: 'loading' as const, text: 'Loading...' };
+    }
+    if (isSending) {
+      return { type: 'sending' as const, text: 'Sending...' };
+    }
+    return { type: 'normal' as const, text: userData.lastActive };
+  }, [isTyping, typingUser, isLoadingFromAPI, isSending, userData.lastActive]);
+
   return (
     <Box
       px="$4"
       py="$3"
+      pt={insets.top + 2} // Reduced to 2 to move header much higher
       bg="#FFFFFF"
       borderBottomWidth={1}
       borderBottomColor="#E5E7EB"
@@ -178,12 +211,12 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           <Box position="relative">
             <Avatar size="md">
               <AvatarImage
-                source={{ uri: getProfilePhotoUrl(chat.other_user) || "https://via.placeholder.com/50" }}
-                alt={`${chat.other_user.profile?.first_name || 'User'}'s profile`}
+                source={{ uri: userData.photoUrl }}
+                alt={`${userData.name}'s profile`}
               />
             </Avatar>
             {/* Online Status Indicator */}
-            {isUserOnline(chat.other_user.last_active_at) && (
+            {userData.isOnline && (
               <Box
                 position="absolute"
                 bottom={2}
@@ -203,31 +236,21 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
               fontSize="$lg"
               fontWeight="$semibold"
             >
-              {chat.other_user.profile ?
-                `${chat.other_user.profile.first_name} ${chat.other_user.profile.last_name}` :
-                "User"}
+              {userData.name}
             </Text>
-            {isTyping && typingUser ? (
+            {statusText.type === 'typing' ? (
               <TypingIndicator />
-            ) : isLoadingFromAPI ? (
+            ) : statusText.type === 'loading' || statusText.type === 'sending' ? (
               <Text
                 color="#6B7280"
                 fontSize="$xs"
                 fontStyle="italic"
               >
-                Loading...
-              </Text>
-            ) : isSending ? (
-              <Text
-                color="#6B7280"
-                fontSize="$xs"
-                fontStyle="italic"
-              >
-                Sending...
+                {statusText.text}
               </Text>
             ) : (
               <HStack alignItems="center" space="xs">
-                {isUserOnline(chat.other_user.last_active_at) && (
+                {userData.isOnline && (
                   <Box
                     width={6}
                     height={6}
@@ -236,11 +259,11 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
                   />
                 )}
                 <Text
-                  color={isUserOnline(chat.other_user.last_active_at) ? "#10B981" : "#6B7280"}
+                  color={userData.isOnline ? "#10B981" : "#6B7280"}
                   fontSize="$xs"
-                  fontWeight={isUserOnline(chat.other_user.last_active_at) ? "$medium" : "$normal"}
+                  fontWeight={userData.isOnline ? "$medium" : "$normal"}
                 >
-                  {formatLastActive(chat.other_user.last_active_at)}
+                  {statusText.text}
                 </Text>
               </HStack>
             )}
@@ -274,4 +297,4 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
   );
 };
 
-export default ChatHeader;
+export default React.memo(ChatHeader);

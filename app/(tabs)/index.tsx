@@ -24,7 +24,7 @@ export default function TabOneScreen() {
 
   // Match modal state
   const [matchModalVisible, setMatchModalVisible] = useState(false);
-  const [matchedUser, setMatchedUser] = useState<PotentialMatch | null>(null);
+  const [matchData, setMatchData] = useState<any | null>(null);
 
   // Potential matches state
   const [potentialMatches, setPotentialMatches] = useState<PotentialMatch[]>([]);
@@ -35,7 +35,7 @@ export default function TabOneScreen() {
 
   // Dating Preferences State
   const [selectedCountry, setSelectedCountry] = useState('');
-  const [ageRange, setAgeRange] = useState([18, 35]);
+  const [ageRange, setAgeRange] = useState<[number, number]>([18, 35]);
   const [preferredGender, setPreferredGender] = useState('all');
   const [searchGlobal, setSearchGlobal] = useState(true);
 
@@ -114,8 +114,8 @@ export default function TabOneScreen() {
           console.log('Like sent successfully:', response.message);
           if (response.data?.is_match) {
             console.log('It\'s a match! 🎉');
-            // Show match modal with the current user
-            setMatchedUser(currentMatch);
+            // Show match modal with the match data
+            setMatchData(response.data);
             setMatchModalVisible(true);
             // Don't advance to next match yet - wait for user to dismiss the match modal
             return;
@@ -150,7 +150,7 @@ export default function TabOneScreen() {
   const handleSendMessage = () => {
     setMatchModalVisible(false);
     // Here you would typically navigate to the chat screen with the matched user
-    console.log('Navigate to chat with user:', matchedUser?.id);
+    console.log('Navigate to chat with user:', matchData?.liked_user?.id);
     // Move to next match after closing the modal
     if (currentMatchIndex < potentialMatches.length - 1) {
       setCurrentMatchIndex(prevIndex => prevIndex + 1);
@@ -363,9 +363,8 @@ export default function TabOneScreen() {
         {/* Match Modal */}
         <MatchModal
           visible={matchModalVisible}
-          matchedUser={matchedUser}
+          matchData={matchData}
           onClose={handleCloseMatchModal}
-          onSendMessage={handleSendMessage}
           onKeepSwiping={handleKeepSwiping}
         />
       </Box>

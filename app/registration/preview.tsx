@@ -31,10 +31,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { MaterialIcons } from '@expo/vector-icons';
 
 interface PhotoData {
-  id: string;
-  uri: string;
+  file: any;           // Actual file object for server
+  uri: string;         // Local URI for display
   isMain: boolean;
-  isPrivate: boolean;
+  type?: string;
+  name?: string;
 }
 
 // Remove the RouteParams interface and use a type instead
@@ -69,6 +70,7 @@ export default function PreviewScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [photos, setPhotos] = useState<PhotoData[]>([]);
+  const [interests, setInterests] = useState<string[]>([]);
 
   // Helper function to safely get string values from params
   const getParamValue = (key: string): string => {
@@ -89,20 +91,26 @@ export default function PreviewScreen() {
     }
   }, [params.photosData]);
 
+  // Parse interests data from params
+  useEffect(() => {
+    const interestsData = getParamValue('interests');
+    if (interestsData) {
+      try {
+        const parsedInterests = JSON.parse(interestsData);
+        setInterests(Array.isArray(parsedInterests) ? parsedInterests : []);
+      } catch (e) {
+        console.error('Error parsing interests data:', e);
+        // Fallback to comma-separated string if JSON parsing fails
+        setInterests(interestsData.split(',').map(i => i.trim()).filter(Boolean));
+      }
+    }
+  }, [params.interests]);
+
   // Get main photo for profile display
   const mainPhoto = useMemo(() => photos.find(photo => photo?.isMain), [photos]);
 
-  // Get private photos count
-  const privatePhotos = useMemo(() => photos.filter(photo => photo?.isPrivate), [photos]);
-  const publicPhotos = useMemo(() => photos.filter(photo => !photo?.isPrivate), [photos]);
-
-  // Format the interests string for display
-  const formatInterests = (interestsString: string) => {
-    if (!interestsString) return [];
-    return interestsString.split(',').map(interest =>
-      interest.trim().charAt(0).toUpperCase() + interest.trim().slice(1)
-    );
-  };
+  // Check if profile is private
+  const isPrivateProfile = getParamValue('isPrivateProfile') === 'true';
 
   // Format the date for display
   const formatDate = (dateString: string) => {
@@ -120,31 +128,45 @@ export default function PreviewScreen() {
     setIsLoading(true);
 
     try {
-      const registrationData = {
-        gender: getParamValue('gender'),
-        firstName: getParamValue('firstName'),
-        lastName: getParamValue('lastName'),
-        dateOfBirth: getParamValue('dateOfBirth'),
-        age: getParamValue('age'),
-        email: getParamValue('email'),
-        status: getParamValue('status'),
-        occupation: getParamValue('occupation'),
-        profession: getParamValue('profession'),
-        bio: getParamValue('bio'),
-        interests: getParamValue('interests'),
-        country: getParamValue('country'),
-        countryCode: getParamValue('countryCode'),
-        state: getParamValue('state'),
-        region: getParamValue('region'),
-        city: getParamValue('city'),
-        lookingFor: getParamValue('lookingFor'),
-        photos
-      };
+      // Prepare photos with file objects for server upload
+      const photosForServer = photos.map((photo, index) => ({
+        id: `photo_${index + 1}`,       // Generate unique ID
+        file: photo.file,               // File object for upload  
+        uri: photo.uri,                 // URI for reference
+        isMain: photo.isMain,
+        isPrivate: isPrivateProfile,    // Use profile-level privacy for all photos
+        type: photo.type,
+        name: photo.name
+      }));
+
+              const registrationData = {
+          gender: getParamValue('gender'),
+          firstName: getParamValue('firstName'),
+          lastName: getParamValue('lastName'),
+          dateOfBirth: getParamValue('dateOfBirth'),
+          age: getParamValue('age'),
+          email: getParamValue('email'),
+          status: getParamValue('status'),
+          occupation: getParamValue('occupation'),
+          profession: getParamValue('profession'),
+          bio: getParamValue('bio'),
+          interests: JSON.stringify(interests), // Send as JSON string
+          country: getParamValue('country'),
+          countryCode: getParamValue('countryCode'),
+          state: getParamValue('state'),
+          region: getParamValue('region'),
+          city: getParamValue('city'),
+          lookingFor: getParamValue('lookingFor'),
+          photos: photosForServer, // Send file objects for upload
+          isPrivateProfile: isPrivateProfile // Profile-level privacy
+        };
 
       const result = await completeRegistration(registrationData);
 
+      console.log('result', result);
+
       if (result.success) {
-        router.replace('/(tabs)');
+        router.replace('/registration/permissions');
       } else {
         setError('Failed to complete registration. Please try again.');
       }
@@ -156,7 +178,14 @@ export default function PreviewScreen() {
     }
   };
 
-  const interests = formatInterests(getParamValue('interests'));
+  // Format interests for display
+  const formatInterests = (interests: string[]) => {
+    return interests.map(interest =>
+      interest.charAt(0).toUpperCase() + interest.slice(1)
+    );
+  };
+
+  const formattedInterests = formatInterests(interests);
 
   return (
     <SafeAreaView flex={1} bg="$primaryLight50">
@@ -216,11 +245,38 @@ export default function PreviewScreen() {
                     <AvatarImage
                       source={{ uri: mainPhoto.uri }}
                       alt="Profile Photo"
+                      blurRadius={isPrivateProfile ? 10 : 0}
                     />
                   ) : (
                     <AvatarFallbackText color="$primary700" fontSize="$2xl" fontWeight="$bold">
                       {getParamValue('firstName')?.charAt(0)}{getParamValue('lastName')?.charAt(0)}
                     </AvatarFallbackText>
+                  )}
+                  {isPrivateProfile && mainPhoto && (
+                    <Box
+                      position="absolute"
+                      top="$0"
+                      left="$0"
+                      right="$0"
+                      bottom="$0"
+                      alignItems="center"
+                      justifyContent="center"
+                      borderRadius="$full"
+                    >
+                      <Box
+                        bg="$red600"
+                        px="$2"
+                        py="$1"
+                        borderRadius="$sm"
+                      >
+                        <HStack alignItems="center" space="xs">
+                          <MaterialIcons name="lock" size={12} color="white" />
+                          <Text color="$white" size="xs" fontWeight="$bold">
+                            PRIVATE
+                          </Text>
+                        </HStack>
+                      </Box>
+                    </Box>
                   )}
                 </Avatar>
 
@@ -236,6 +292,17 @@ export default function PreviewScreen() {
                     <Text size="md" color="$textLight600" textTransform="capitalize">
                       {getParamValue('gender')}
                     </Text>
+                    {isPrivateProfile && (
+                      <>
+                        <Text size="md" color="$textLight400">•</Text>
+                        <HStack alignItems="center" space="xs">
+                          <MaterialIcons name="lock" size={14} color="#ef4444" />
+                          <Text size="sm" color="$red600" fontWeight="$medium">
+                            Private Profile
+                          </Text>
+                        </HStack>
+                      </>
+                    )}
                   </HStack>
                 </VStack>
               </VStack>
@@ -252,7 +319,7 @@ export default function PreviewScreen() {
                         Email
                       </Text>
                       <Text size="sm" color="$textLight700" textAlign="right" flex={1} ml="$4">
-                        {getParamValue('email')}
+                        {getParamValue('email') || 'Not provided'}
                       </Text>
                     </HStack>
                     <HStack justifyContent="space-between" alignItems="center">
@@ -335,9 +402,9 @@ export default function PreviewScreen() {
                     🎯 Interests
                   </Text>
                   <Box pl="$4">
-                    {interests.length > 0 ? (
+                    {formattedInterests.length > 0 ? (
                       <HStack space="xs" flexWrap="wrap">
-                        {interests.map((interest, index) => (
+                        {formattedInterests.map((interest, index) => (
                           <Badge key={index} action="info" variant="solid" size="sm" mb="$2">
                             <BadgeText>{interest}</BadgeText>
                           </Badge>
@@ -427,11 +494,11 @@ export default function PreviewScreen() {
                               'No photos uploaded'
                             }
                           </Text>
-                          {privatePhotos.length > 0 && (
+                          {isPrivateProfile && photos.length > 0 && (
                             <HStack alignItems="center" space="xs">
                               <MaterialIcons name="lock" size={14} color="#ef4444" />
                               <Text size="xs" color="$red600">
-                                {privatePhotos.length} private photo{privatePhotos.length > 1 ? 's' : ''}
+                                All photos are private
                               </Text>
                             </HStack>
                           )}
@@ -447,7 +514,7 @@ export default function PreviewScreen() {
                                 <Text size="sm" color="$textLight500" fontWeight="$medium">
                                   Main Photo:
                                 </Text>
-                                {mainPhoto.isPrivate && (
+                                {isPrivateProfile && (
                                   <HStack alignItems="center" space="xs">
                                     <MaterialIcons name="lock" size={14} color="#ef4444" />
                                     <Text size="xs" color="$red600" fontWeight="$medium">
@@ -462,16 +529,20 @@ export default function PreviewScreen() {
                                 borderRadius="$lg"
                                 overflow="hidden"
                                 borderWidth="$1"
-                                borderColor={mainPhoto.isPrivate ? '$red200' : '$borderLight200'}
+                                borderColor={isPrivateProfile ? '$red200' : '$borderLight200'}
                                 position="relative"
                               >
                                 <Image
                                   source={{ uri: mainPhoto.uri }}
                                   alt="Main Photo"
-                                  style={{ width: '100%', height: 160 }}
+                                  style={{ 
+                                    width: '100%', 
+                                    height: 160
+                                  }}
                                   resizeMode="cover"
+                                  blurRadius={isPrivateProfile ? 10 : 0}
                                 />
-                                {mainPhoto.isPrivate && (
+                                {isPrivateProfile && (
                                   <Box
                                     position="absolute"
                                     top="$2"
@@ -493,74 +564,47 @@ export default function PreviewScreen() {
                             </Box>
                           )}
 
-                          {/* Public Photos */}
-                          {publicPhotos.filter(p => !p.isMain).length > 0 && (
+                          {/* Additional Photos */}
+                          {photos.filter(p => !p.isMain).length > 0 && (
                             <Box mt="$2">
                               <Text size="sm" color="$textLight500" fontWeight="$medium" mb="$1">
-                                Public Photos:
+                                Additional Photos:
                               </Text>
                               <HStack flexWrap="wrap" space="sm">
-                                {publicPhotos.filter(p => !p.isMain).map((photo) => (
+                                {photos.filter(p => !p.isMain).map((photo, index) => (
                                   <Box
-                                    key={photo.id}
+                                    key={photo.uri}
                                     width="$20"
                                     height="$20"
                                     borderRadius="$md"
                                     overflow="hidden"
                                     borderWidth="$1"
-                                    borderColor="$borderLight200"
-                                    mb="$2"
-                                  >
-                                    <Image
-                                      source={{ uri: photo.uri }}
-                                      alt="Public Photo"
-                                      style={{ width: 80, height: 80 }}
-                                      resizeMode="cover"
-                                    />
-                                  </Box>
-                                ))}
-                              </HStack>
-                            </Box>
-                          )}
-
-                          {/* Private Photos */}
-                          {privatePhotos.filter(p => !p.isMain).length > 0 && (
-                            <Box mt="$2">
-                              <HStack alignItems="center" space="xs" mb="$1">
-                                <MaterialIcons name="lock" size={16} color="#ef4444" />
-                                <Text size="sm" color="$red600" fontWeight="$medium">
-                                  Private Photos:
-                                </Text>
-                              </HStack>
-                              <HStack flexWrap="wrap" space="sm">
-                                {privatePhotos.filter(p => !p.isMain).map((photo) => (
-                                  <Box
-                                    key={photo.id}
-                                    width="$20"
-                                    height="$20"
-                                    borderRadius="$md"
-                                    overflow="hidden"
-                                    borderWidth="$1"
-                                    borderColor="$red200"
+                                    borderColor={isPrivateProfile ? '$red200' : '$borderLight200'}
                                     mb="$2"
                                     position="relative"
                                   >
                                     <Image
                                       source={{ uri: photo.uri }}
-                                      alt="Private Photo"
-                                      style={{ width: 80, height: 80 }}
+                                      alt={`Photo ${index + 1}`}
+                                      style={{ 
+                                        width: 80, 
+                                        height: 80
+                                      }}
                                       resizeMode="cover"
+                                      blurRadius={isPrivateProfile ? 10 : 0}
                                     />
-                                    <Box
-                                      position="absolute"
-                                      top="$1"
-                                      right="$1"
-                                      bg="$red600"
-                                      p="$1"
-                                      borderRadius="$xs"
-                                    >
-                                      <MaterialIcons name="lock" size={10} color="white" />
-                                    </Box>
+                                    {isPrivateProfile && (
+                                      <Box
+                                        position="absolute"
+                                        top="$1"
+                                        right="$1"
+                                        bg="$red600"
+                                        p="$1"
+                                        borderRadius="$xs"
+                                      >
+                                        <MaterialIcons name="lock" size={10} color="white" />
+                                      </Box>
+                                    )}
                                   </Box>
                                 ))}
                               </HStack>
@@ -614,7 +658,8 @@ export default function PreviewScreen() {
               <HStack space="sm" alignItems="flex-start">
                 <Text color="$primary600" fontSize="$sm" mt="$0.5">💡</Text>
                 <Text size="xs" color="$primary700" flex={1} lineHeight="$xs">
-                  You can always update your profile information later in your account settings. Private photos will only be visible to users you grant access to.
+                  You can always update your profile information later in your account settings. 
+                  {isPrivateProfile && ' Your private profile means all photos will be blurred until you match with someone.'}
                 </Text>
               </HStack>
             </Box>

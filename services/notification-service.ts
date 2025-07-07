@@ -11,6 +11,8 @@ Notifications.setNotificationHandler({
     shouldShowAlert: true,
     shouldPlaySound: true,
     shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
   }),
 });
 
@@ -73,9 +75,9 @@ class NotificationService {
         return;
       }
 
-      // Get the token using the app's slug as the projectId
+      // Get the token using the app's project ID from config
       const token = (await Notifications.getExpoPushTokenAsync({
-        projectId: CONFIG.EXPO_PROJECT_ID, // Using the app's slug from config
+        projectId: CONFIG.EXPO_PROJECT_ID,
       })).data;
 
       // Store the token
@@ -97,6 +99,13 @@ class NotificationService {
       }
     } catch (error) {
       console.error('Error registering for push notifications:', error);
+      
+      // If it's a project ID error, clear any stored token and try again later
+      if (error instanceof Error && error.message.includes('EXPERIENCE_NOT_FOUND')) {
+        console.log('Invalid project ID detected, clearing stored token');
+        await AsyncStorage.removeItem('expoPushToken');
+        this.expoPushToken = null;
+      }
     }
   }
 
@@ -200,12 +209,12 @@ class NotificationService {
    */
   private removeNotificationListeners(): void {
     if (this.notificationListener) {
-      Notifications.removeNotificationSubscription(this.notificationListener);
+      this.notificationListener.remove();
       this.notificationListener = null;
     }
 
     if (this.responseListener) {
-      Notifications.removeNotificationSubscription(this.responseListener);
+      this.responseListener.remove();
       this.responseListener = null;
     }
   }
@@ -243,6 +252,40 @@ class NotificationService {
       });
     } catch (error) {
       console.error('Error showing message notification:', error);
+    }
+  }
+
+  /**
+   * Show a general notification
+   * @param title The notification title
+   * @param body The notification body
+   * @param options Additional options like type, priority, etc.
+   */
+  async showNotification(title: string, body: string, options: any = {}): Promise<void> {
+    try {
+      // Prepare the notification content
+      let notificationContent: Notifications.NotificationContentInput = {
+        title,
+        body,
+        data: {
+          type: options.type || 'general',
+          priority: options.priority || 'normal',
+          ...options,
+        },
+      };
+
+      // Set sound and vibration based on priority
+      if (options.priority === 'high') {
+        notificationContent.sound = 'default';
+      }
+
+      // Schedule the notification
+      await Notifications.scheduleNotificationAsync({
+        content: notificationContent,
+        trigger: null, // null means show immediately
+      });
+    } catch (error) {
+      console.error('Error showing notification:', error);
     }
   }
 

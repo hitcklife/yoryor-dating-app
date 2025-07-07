@@ -32,6 +32,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { Image } from "@gluestack-ui/themed";
 import {Ionicons} from "@expo/vector-icons";
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { apiClient } from "@/services/api-client";
 
 // Import custom components
 import ChatHeader from "@/components/ui/chat/ChatHeader";
@@ -39,6 +40,12 @@ import MessageItem from "@/components/ui/chat/MessageItem";
 import MessageInput from "@/components/ui/chat/MessageInput";
 import ChatOptions from "@/components/ui/chat/ChatOptions";
 import CallScreen from "@/components/ui/chat/CallScreen";
+import { callService, CallData } from "@/services/call-service";
+
+// Export screen options to ensure no navigation header is shown
+export const options = {
+  headerShown: false,
+};
 
 export default function ChatScreen() {
   // Navigation
@@ -79,6 +86,7 @@ export default function ChatScreen() {
   const [chatChannel, setChatChannel] = useState<any>(null);
   const [callVisible, setCallVisible] = useState(false);
   const [isVideoCall, setIsVideoCall] = useState(false);
+  const [currentCall, setCurrentCall] = useState<CallData | null>(null);
 
   // Message interaction states
   const [editingMessage, setEditingMessage] = useState<Message | null>(null);
@@ -126,6 +134,8 @@ export default function ChatScreen() {
   } | null>(null);
   const [showFilePreview, setShowFilePreview] = useState(false);
 
+
+
   // Merge messages by ID, preserving local data when API data is same
   const mergeMessagesByID = useCallback((localMessages: Message[], apiMessages: Message[]): Message[] => {
     const messageMap = new Map<number, Message>();
@@ -162,336 +172,106 @@ export default function ChatScreen() {
     });
   }, []);
 
-  // Load local messages first, then fetch from API
-  const loadLocalMessages = useCallback(async () => {
-    if (!isMounted.current || !chatId) return;
-
-    try {
-      console.log('Loading local messages for chat ID:', chatId);
-      
-      // Load initial local messages from SQLite with same limit as API for consistency
-      const localMessages = await sqliteService.getInitialMessagesByChatId(chatId, CONFIG.APP.chatMessagesPageSize);
-      console.log('Loaded local messages count:', localMessages.length);
-      
-      if (localMessages.length > 0 && isMounted.current) {
-        // Get current user ID to ensure correct is_mine property
-        const currentUserId = await getCurrentUserId();
-        
-        // Ensure messages have correct is_mine property
-        const messagesWithOwnership = localMessages.map(msg => ({
-          ...msg,
-          is_mine: msg.sender_id === currentUserId
-        }));
-
-        setMessages(messagesWithOwnership);
-        console.log('Set local messages in state:', messagesWithOwnership.length);
-      }
-    } catch (error) {
-      console.error('Error loading local messages:', error);
-    }
-  }, [chatId]);
-
-  // Fetch chat data with optimized pagination for inverted list
-  const fetchChatData = useCallback(async () => {
-    if (!isMounted.current) return;
-
-    // Check if chatId is valid
-    if (!chatId) {
-      setError('Invalid chat ID. Please go back and try again.');
-      return;
-    }
-
-    setError(null);
-
-    try {
-      console.log('Fetching chat data for chat:', chatId);
-      // Always start from page 1 for initial load
-      const response = await chatsService.getChatDetails(chatId, 1);
-
-      if (response?.data && isMounted.current) {
-        const { chat: apiChat, messages: apiMessages, pagination } = response.data;
-        
-        // Always update chat info from API as it's more current
-        setChat(apiChat);
-
-        // Handle message merging more carefully
-        if (apiMessages && apiMessages.length > 0) {
-          setMessages(prevMessages => {
-            // If we have local messages, merge them intelligently
-            if (prevMessages.length > 0) {
-              const merged = mergeMessagesByID(prevMessages, apiMessages);
-              console.log('Merged messages:', { local: prevMessages.length, api: apiMessages.length, merged: merged.length });
-              return merged;
-            }
-            // Otherwise, just use API messages
-            console.log('Using API messages directly:', apiMessages.length);
-            return apiMessages;
-          });
-
-          // Update pagination state
-          if (pagination) {
-            const newCurrentPage = pagination.current_page || 1;
-            const newTotalPages = pagination.last_page || 1;
-            const newHasMore = newCurrentPage < newTotalPages;
-            
-            console.log('Pagination update:', { 
-              newCurrentPage, 
-              newTotalPages, 
-              newHasMore,
-              messagesLoaded: apiMessages.length 
-            });
-            
-            setCurrentPage(newCurrentPage);
-            setTotalPages(newTotalPages);
-            setHasMoreMessages(newHasMore);
-          }
-        } else {
-          // No messages from API, reset pagination
-          setCurrentPage(1);
-          setTotalPages(1);
-          setHasMoreMessages(false);
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching chat data:', error);
-      setError('Failed to load chat. Please check your connection and try again.');
-    } finally {
-      if (isMounted.current) {
-        setIsLoadingFromAPI(false);
-      }
-    }
-  }, [chatId]);
-
-  // Load older messages when scrolling up - optimized for inverted list
-  const loadMoreMessages = useCallback(async () => {
-    if (loadingMore || !hasMoreMessages || currentPage >= totalPages || !isMounted.current) {
-      return;
-    }
-
-    // Check if chatId is valid
-    if (!chatId) {
-      console.warn('Cannot load more messages: Invalid chat ID');
-      return;
-    }
-
-    setLoadingMore(true);
-    
-    try {
-      const response = await chatsService.loadMoreMessages(chatId, currentPage);
-
-      if (response?.data?.messages?.length > 0 && isMounted.current) {
-        const newMessages = response.data.messages;
-
-        // Merge older messages with existing ones, preventing duplicates
-        setMessages(prevMessages => {
-          const mergedMessages = mergeMessagesByID(prevMessages, newMessages);
-          return mergedMessages;
-        });
-
-        // Update pagination info from the response
-        if (response.data.pagination) {
-          const pagination = response.data.pagination;
-          const newCurrentPage = pagination.current_page || currentPage + 1;
-          const newTotalPages = pagination.last_page || totalPages;
-          const newHasMore = newCurrentPage < newTotalPages;
-          
-          console.log('Pagination update:', { 
-            newCurrentPage, 
-            newTotalPages, 
-            newHasMore,
-            messagesLoaded: newMessages.length 
-          });
-          
-          setCurrentPage(newCurrentPage);
-          setTotalPages(newTotalPages);
-          setHasMoreMessages(newHasMore);
-        }
-      } else if (isMounted.current) {
-        setHasMoreMessages(false);
-      }
-    } catch (error) {
-      console.error('Error loading more messages:', error);
-      if (isMounted.current) {
-        setHasMoreMessages(false);
-      }
-    } finally {
-      if (isMounted.current) {
-        setLoadingMore(false);
-      }
-    }
-  }, [chatId, loadingMore, hasMoreMessages, currentPage, totalPages, mergeMessagesByID]);
-
-  // ---- WebSocket & Chat connection management ----
-
-  // Initialize WebSocket connection
-  useEffect(() => {
-    const initializeWebSocket = async () => {
-      const currentUserId = await getCurrentUserId();
-      if (currentUserId) {
-        webSocketService.setCurrentUserId(currentUserId);
-        await webSocketService.initialize();
-      }
-    };
-
-    initializeWebSocket();
-  }, []);
-
-  // Subscribe to chat channel with enhanced event handling
-  useEffect(() => {
-    if (!chatId) return;
-    let channel: any = null;
-    const connectToChatChannel = async () => {
-      try {
-        await webSocketService.initialize();
-        if (!isMounted.current) return;
-
-        channel = webSocketService.subscribeToChat(
-          chatId,
-          // onMessage
-          async (newMessage: Message) => {
-            if (!isMounted.current) return;
-            
-            // Update chat list with new message
-            try {
-              await chatsService.updateChatWithNewMessage(chatId, newMessage);
-            } catch (error) {
-              console.error('Error updating chat with new message:', error);
-            }
-            
-            setMessages(prevMessages => {
-              const messageExists = prevMessages.some(msg => msg.id === newMessage.id);
-              if (messageExists) return prevMessages;
-              
-              // Use merge strategy to add new message
-              const newMessages = mergeMessagesByID(prevMessages, [newMessage]);
-              
-              // Scroll to bottom with animation for incoming messages (if not from me)
-              if (!newMessage.is_mine) {
-                setTimeout(() => {
-                  if (isMounted.current && flatListRef.current) {
-                    flatListRef.current.scrollToOffset({ offset: 0, animated: true });
-                  }
-                }, 50);
-              }
-              
-              return newMessages;
-            });
-          },
-          // onTyping
-          (user: any) => {
-            if (!isMounted.current) return;
-            
-            const currentChat = chatRef.current;
-            
-            // Only show typing if it's from the other user and we have chat data
-            if (user && currentChat && currentChat.other_user) {
-              const typingUserId = user.user_id || user.id;
-              
-              if (typingUserId && typingUserId === currentChat.other_user.id) {
-                const userName = user.name || currentChat.other_user.profile?.first_name || 'User';
-                
-                setIsTyping(true);
-                setTypingUser(userName);
-                
-                // Hide typing after 3 seconds
-                setTimeout(() => {
-                  if (isMounted.current) {
-                    setIsTyping(false);
-                    setTypingUser(null);
-                  }
-                }, 3000);
-              }
-            }
-          },
-          // Additional callbacks for edit/delete events
-          {
-            onMessageEdited: (editedMessage: Message) => {
-              if (!isMounted.current) return;
-              setMessages(prevMessages =>
-                prevMessages.map(msg =>
-                  msg.id === editedMessage.id ? { ...msg, ...editedMessage } : msg
-                )
-              );
-            },
-            onMessageDeleted: (messageId: number) => {
-              if (!isMounted.current) return;
-              setMessages(prevMessages =>
-                prevMessages.filter(msg => msg.id !== messageId)
-              );
-            }
-          }
-        );
-        setChatChannel(channel);
-      } catch (error) {
-        console.error('Error initializing WebSocket:', error);
-        if (isMounted.current) {
-          Alert.alert(
-            "Connection Error",
-            "Failed to connect to chat server. Some features may not work properly.",
-            [{ text: "OK" }]
-          );
-        }
-      }
-    };
-    connectToChatChannel();
-    return () => {
-      if (channel) {
-        webSocketService.unsubscribeFromChat(chatId);
-      }
-    };
-  }, [chatId, mergeMessagesByID]);
-
   // Initial data loading
   useEffect(() => {
     const initializeChat = async () => {
       try {
-        console.log('Initializing chat with ID:', chatId);
+        console.log('=== CHAT INITIALIZATION START ===');
+        console.log('Chat ID:', chatId);
         
-        // Force database migration first
-        await initializeChatsService();
-        
-        // Check if chatId is valid before fetching data
-        if (chatId) {
-          console.log('Loading local messages for chat:', chatId);
-          
-          // Load local data first for immediate display
-          await loadLocalMessages();
-          
-          // Stop initial loading after local data is loaded
-          if (isMounted.current) {
-            setLoading(false);
-          }
-          
-          // Try to fetch fresh data from API in background
-          console.log('Fetching fresh chat data from API for chat:', chatId);
-          setIsLoadingFromAPI(true);
-          
-          try {
-            await fetchChatData();
-          } catch (apiError) {
-            console.warn('API call failed, using local data:', apiError);
-            // Don't fail the entire initialization if API fails
-          } finally {
-            // Always ensure loading from API is set to false
-            if (isMounted.current) {
-              setIsLoadingFromAPI(false);
-              console.log('Set isLoadingFromAPI to false after fetchChatData');
-            }
-          }
-          
-          console.log('Chat initialization completed');
-          
-          // Scroll to bottom after initial load to show latest messages
-          setTimeout(() => {
-            if (isMounted.current && flatListRef.current) {
-              flatListRef.current.scrollToOffset({ offset: 0, animated: false });
-            }
-          }, 100);
-        } else {
-          console.error('Invalid chat ID:', chatId);
+        if (!chatId) {
           setError('Invalid chat ID. Please go back and try again.');
           setLoading(false);
+          return;
         }
+
+        // Force database migration first
+        console.log('Initializing chats service...');
+        await initializeChatsService();
+        console.log('Chats service initialized');
+        
+        // Load local data immediately
+        console.log('Loading local data...');
+        const localChat = await sqliteService.getChatById(chatId);
+        const localMessages = await sqliteService.getInitialMessagesByChatId(chatId, CONFIG.APP.chatMessagesPageSize);
+        
+        console.log('Local chat found:', !!localChat);
+        console.log('Local messages count:', localMessages.length);
+        
+        // Set chat data immediately if available
+        if (localChat) {
+          setChat(localChat);
+          console.log('Set chat data from local storage');
+        }
+        
+        // Set messages immediately if available
+        if (localMessages.length > 0) {
+          const currentUserId = await getCurrentUserId();
+          const messagesWithOwnership = localMessages.map(msg => ({
+            ...msg,
+            is_mine: msg.sender_id === currentUserId
+          }));
+          setMessages(messagesWithOwnership);
+          console.log('Set messages from local storage');
+        }
+        
+        // Stop loading immediately after local data is loaded
+        setLoading(false);
+        console.log('Loading stopped - showing local data');
+        
+        // Make API call in background to get fresh data
+        console.log('Making API call in background...');
+        setIsLoadingFromAPI(true);
+        
+        try {
+          const response = await chatsService.getChatDetails(chatId, 1);
+          
+          if (response?.data) {
+            const { chat: apiChat, messages: apiMessages } = response.data;
+            
+            // Only update chat if important fields changed
+            if (apiChat && localChat) {
+              const localProfile = localChat.other_user?.profile || {};
+              const apiProfile = apiChat.other_user?.profile || {};
+              const localPhoto = localChat.other_user?.profile_photo_path || '';
+              const apiPhoto = apiChat.other_user?.profile_photo_path || '';
+              const localLastActive = localChat.other_user?.last_active_at || '';
+              const apiLastActive = apiChat.other_user?.last_active_at || '';
+              if (
+                localProfile.first_name !== apiProfile.first_name ||
+                localProfile.last_name !== apiProfile.last_name ||
+                localPhoto !== apiPhoto ||
+                localLastActive !== apiLastActive
+              ) {
+                setChat(apiChat);
+                console.log('Updated chat data from API (fields changed)');
+              } else {
+                console.log('API chat data arrived, but no important fields changed');
+              }
+            } else if (apiChat && !localChat) {
+              setChat(apiChat);
+              console.log('Set chat data from API (no local chat)');
+            }
+            
+            // Update messages if API has more data
+            if (apiMessages && apiMessages.length > 0) {
+              setMessages(prevMessages => {
+                const merged = mergeMessagesByID(prevMessages, apiMessages);
+                console.log('Merged API messages with local messages');
+                return merged;
+              });
+            }
+          }
+        } catch (apiError) {
+          console.warn('API call failed, using local data:', apiError);
+          // Don't show error to user since we have local data
+        } finally {
+          setIsLoadingFromAPI(false);
+          console.log('API call completed');
+        }
+        
+        console.log('=== CHAT INITIALIZATION COMPLETE ===');
+        
       } catch (error) {
         console.error('Error initializing chat:', error);
         setError('Failed to load chat. Please try again.');
@@ -500,13 +280,15 @@ export default function ChatScreen() {
       }
     };
 
+    console.log('Starting chat initialization...');
     initializeChat();
 
     // Cleanup function
     return () => {
+      console.log('Chat component cleanup');
       isMounted.current = false;
     };
-  }, [chatId, loadLocalMessages, fetchChatData]);
+  }, [chatId, mergeMessagesByID]);
 
   // Update chat ref whenever chat state changes
   useEffect(() => {
@@ -549,6 +331,40 @@ export default function ChatScreen() {
   // Handle reply to message
   const handleReplyToMessage = useCallback((messageToReply: Message) => {
     setReplyingToMessage(messageToReply);
+  }, []);
+
+  // Handle joining a call from a call message
+  const handleJoinCall = useCallback(async (callData: any) => {
+    try {
+      console.log('Joining call from message:', callData);
+      
+      // Join the call via the call service
+      const joinData = await callService.joinCall(callData.callId);
+      
+      console.log('Call joined successfully:', joinData);
+      
+      // Set up the call screen
+      setCurrentCall({
+        callId: joinData.callId,
+        meetingId: joinData.meetingId,
+        token: joinData.token,
+        messageId: joinData.messageId,
+        type: joinData.type,
+        caller: { id: 0, name: null },
+        receiver: { id: 0, name: null }
+      });
+      
+      setIsVideoCall(joinData.type === 'video');
+      setCallVisible(true);
+      
+    } catch (error) {
+      console.error('Error joining call:', error);
+      Alert.alert(
+        "Call Error",
+        "Failed to join the call. Please try again.",
+        [{ text: "OK" }]
+      );
+    }
   }, []);
 
   // Send edited message
@@ -671,14 +487,19 @@ export default function ChatScreen() {
   // Phone call handler
   const handlePhoneCall = useCallback(async () => {
     try {
-      // Initialize VideoSDK service
-      await videoSDKService.initialize();
+      if (!chat?.other_user?.id) {
+        Alert.alert("Error", "Cannot start call: User not found");
+        return;
+      }
 
-      // Set call type to audio
+      console.log('Initiating voice call with user:', chat.other_user.id);
+      const callData = await callService.initiateCall(chat.other_user.id, 'voice');
+      
+      setCurrentCall(callData);
       setIsVideoCall(false);
-
-      // Show call screen
       setCallVisible(true);
+      
+      console.log('Voice call initiated successfully:', callData);
     } catch (error) {
       console.error('Error starting audio call:', error);
       Alert.alert(
@@ -687,19 +508,24 @@ export default function ChatScreen() {
           [{ text: "OK" }]
       );
     }
-  }, []);
+  }, [chat]);
 
   // Video call handler
   const handleVideoCall = useCallback(async () => {
     try {
-      // Initialize VideoSDK service
-      await videoSDKService.initialize();
+      if (!chat?.other_user?.id) {
+        Alert.alert("Error", "Cannot start call: User not found");
+        return;
+      }
 
-      // Set call type to video
+      console.log('Initiating video call with user:', chat.other_user.id);
+      const callData = await callService.initiateCall(chat.other_user.id, 'video');
+      
+      setCurrentCall(callData);
       setIsVideoCall(true);
-
-      // Show call screen
       setCallVisible(true);
+      
+      console.log('Video call initiated successfully:', callData);
     } catch (error) {
       console.error('Error starting video call:', error);
       Alert.alert(
@@ -708,12 +534,24 @@ export default function ChatScreen() {
           [{ text: "OK" }]
       );
     }
-  }, []);
+  }, [chat]);
 
   // End call handler
-  const handleEndCall = useCallback(() => {
-    setCallVisible(false);
-  }, []);
+  const handleEndCall = useCallback(async () => {
+    try {
+      if (currentCall) {
+        console.log('Ending call:', currentCall.callId);
+        await callService.endCall(currentCall.callId);
+        console.log('Call ended successfully');
+      }
+    } catch (error) {
+      console.error('Error ending call:', error);
+    } finally {
+      setCurrentCall(null);
+      setCallVisible(false);
+      callService.clearCallState();
+    }
+  }, [currentCall]);
 
   // Block user handler
   const handleBlockUser = useCallback(() => {
@@ -1419,8 +1257,9 @@ export default function ChatScreen() {
         onEdit={handleEditMessage}
         onDelete={handleDeleteMessage}
         onReply={handleReplyToMessage}
+        onJoinCall={handleJoinCall}
         replyToMessage={replyToMessage}
-        currentUserId={chat?.pivot?.user_id || 0}
+        currentUserId={chat?.other_user?.pivot?.user_id || 0}
         otherUserId={chat?.other_user?.id || 0}
       />
     );
@@ -1433,11 +1272,15 @@ export default function ChatScreen() {
     handleEditMessage,
     handleDeleteMessage,
     handleReplyToMessage,
+    handleJoinCall,
     getReplyMessage,
     chat
   ]);
 
   // ---- Render UI states ----
+
+  // Debug loading state
+  console.log('Chat screen render state:', { loading, error, chat: !!chat, messagesCount: messages.length });
 
   // Loading state
   if (loading) {
@@ -1456,7 +1299,7 @@ export default function ChatScreen() {
           <Ionicons name="alert-circle-outline" size={48} color="#EF4444" />
           <Text color="#EF4444" mt="$2" textAlign="center">{error}</Text>
           <Box bg="#8B5CF6" px="$4" py="$2" borderRadius="$md">
-            <Pressable onPress={fetchChatData}>
+            <Pressable onPress={() => window.location.reload()}>
               <Text color="#FFFFFF">Try Again</Text>
             </Pressable>
           </Box>
@@ -1465,7 +1308,7 @@ export default function ChatScreen() {
   }
 
   // Chat not found state
-  if (!chat && messages.length === 0) {
+  if (!chat) {
     return (
         <Box flex={1} justifyContent="center" alignItems="center" bg="#FFFFFF">
           <Text>Chat not found</Text>
@@ -1489,7 +1332,7 @@ export default function ChatScreen() {
         presentationStyle="fullScreen"
         onRequestClose={handleEndCall}
       >
-        {chat && (
+        {chat && currentCall && (
           <CallScreen
             chatId={chatId}
             userId={chat.other_user.id}
@@ -1499,6 +1342,8 @@ export default function ChatScreen() {
             userAvatar={getProfilePhotoUrl(chat.other_user) || "https://via.placeholder.com/150"}
             isVideoCall={isVideoCall}
             onEndCall={handleEndCall}
+            meetingId={currentCall.meetingId}
+            token={currentCall.token}
           />
         )}
       </RNModal>
@@ -1560,17 +1405,14 @@ export default function ChatScreen() {
         </Box>
       </RNModal>
 
-      <SafeAreaView
-        flex={1}
-        bg="#FFFFFF"
-      >
-        {/* Chat Header */}
-        {chat && (
+      <Box flex={1} bg="#FFFFFF">
+        {/* Chat Header - Show once we have chat data, keep visible */}
+        {chat && chat.other_user && (
           <ChatHeader
             chat={chat}
             isTyping={isTyping}
             typingUser={typingUser}
-            isLoadingFromAPI={isLoadingFromAPI}
+            isLoadingFromAPI={false} // Don't show loading state in header to prevent blinking
             isSending={isSending}
             formatLastActive={formatLastActive}
             isUserOnline={isUserOnline}
@@ -1591,153 +1433,152 @@ export default function ChatScreen() {
           onDeleteChat={handleDeleteChat}
         />
 
-          {/* Messages List */}
-          <KeyboardAvoidingView
-              behavior={Platform.OS === "ios" ? "padding" : "height"}
-              keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
-              style={{ flex: 1 }}
-              enabled={true}
-          >
-            <Box flex={1}>
-              <FlatList
-                  ref={flatListRef}
-                  data={messages}
-                  renderItem={renderMessage}
-                  keyExtractor={(item) => item.id.toString()}
-                  contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8 }}
-                  inverted={true}
-                  onEndReached={loadMoreMessages}
-                  onEndReachedThreshold={0.5}
-                  initialNumToRender={15}
-                  maxToRenderPerBatch={10}
-                  windowSize={21}
-                  removeClippedSubviews={Platform.OS === 'android'}
-                  showsVerticalScrollIndicator={false}
-                  ListFooterComponent={loadingMore ? (
-                      <Box py="$2" alignItems="center">
-                        <HStack space="sm" alignItems="center">
-                          <ActivityIndicator size="small" color="#8B5CF6" />
-                          <Text color="#6B7280" fontSize="$xs">Loading older messages...</Text>
-                        </HStack>
-                      </Box>
-                  ) : null}
-                  onScroll={(event) => {
-                    if (!event || !event.nativeEvent || !event.nativeEvent.contentOffset || !event.nativeEvent.contentSize || !event.nativeEvent.layoutMeasurement) return;
-                    // Copy values immediately
-                    const offset = event.nativeEvent.contentOffset.y;
-                    const contentHeight = event.nativeEvent.contentSize.height;
-                    const layoutHeight = event.nativeEvent.layoutMeasurement.height;
-                    const isAtBottom = offset <= 20; // For inverted list, bottom is when offset is near 0
-                    setScrollState({
-                      offset,
-                      contentHeight,
-                      layoutHeight,
-                      isAtBottom
-                    });
-                  }}
-                  onContentSizeChange={(width, height) => {
-                    setScrollState(prev => ({
-                      ...prev,
-                      contentHeight: height
-                    }));
-                  }}
-                  onLayout={(event) => {
-                    if (!event || !event.nativeEvent || !event.nativeEvent.layout) return;
-                    // Copy value immediately
-                    const { height } = event.nativeEvent.layout;
-                    setScrollState(prev => ({
-                      ...prev,
-                      layoutHeight: height
-                    }));
-                  }}
-              />
-
-              {/* Reply Preview */}
-              {replyingToMessage && (
-                <Box bg="#F3F4F6" p="$3" mx="$4" borderRadius="$md" borderLeftWidth={3} borderLeftColor="#8B5CF6">
-                  <HStack justifyContent="space-between" alignItems="flex-start">
-                    <VStack flex={1}>
-                      <Text color="#6B7280" fontSize="$xs" fontWeight="$medium" mb="$1">
-                        Replying to {replyingToMessage.is_mine ? "yourself" : (chat?.other_user?.profile?.first_name || "User")}
-                      </Text>
-                      <Text color="#1F2937" fontSize="$sm" numberOfLines={2}>
-                        {replyingToMessage.content}
-                      </Text>
-                    </VStack>
-                    <Box ml="$2">
-                      <Pressable onPress={clearReply}>
-                        <Ionicons name="close" size={20} color="#6B7280" />
-                      </Pressable>
+        {/* Messages List */}
+        <KeyboardAvoidingView
+            behavior={Platform.OS === "ios" ? "padding" : "height"}
+            keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
+            style={{ flex: 1 }}
+            enabled={true}
+        >
+          <Box flex={1}>
+            <FlatList
+                ref={flatListRef}
+                data={messages}
+                renderItem={renderMessage}
+                keyExtractor={(item) => item.id.toString()}
+                contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8 }}
+                inverted={true}
+                onEndReachedThreshold={0.5}
+                initialNumToRender={15}
+                maxToRenderPerBatch={10}
+                windowSize={21}
+                removeClippedSubviews={Platform.OS === 'android'}
+                showsVerticalScrollIndicator={false}
+                ListFooterComponent={loadingMore ? (
+                    <Box py="$2" alignItems="center">
+                      <HStack space="sm" alignItems="center">
+                        <ActivityIndicator size="small" color="#8B5CF6" />
+                        <Text color="#6B7280" fontSize="$xs">Loading older messages...</Text>
+                      </HStack>
                     </Box>
-                  </HStack>
-                </Box>
-              )}
+                ) : null}
+                onScroll={(event) => {
+                  if (!event || !event.nativeEvent || !event.nativeEvent.contentOffset || !event.nativeEvent.contentSize || !event.nativeEvent.layoutMeasurement) return;
+                  // Copy values immediately
+                  const offset = event.nativeEvent.contentOffset.y;
+                  const contentHeight = event.nativeEvent.contentSize.height;
+                  const layoutHeight = event.nativeEvent.layoutMeasurement.height;
+                  const isAtBottom = offset <= 20; // For inverted list, bottom is when offset is near 0
+                  setScrollState({
+                    offset,
+                    contentHeight,
+                    layoutHeight,
+                    isAtBottom
+                  });
+                }}
+                onContentSizeChange={(width, height) => {
+                  setScrollState(prev => ({
+                    ...prev,
+                    contentHeight: height
+                  }));
+                }}
+                onLayout={(event) => {
+                  if (!event || !event.nativeEvent || !event.nativeEvent.layout) return;
+                  // Copy value immediately
+                  const { height } = event.nativeEvent.layout;
+                  setScrollState(prev => ({
+                    ...prev,
+                    layoutHeight: height
+                  }));
+                }}
+            />
 
-              {/* Edit Preview */}
-              {editingMessage && (
-                <Box bg="#FEF3C7" p="$3" mx="$4" borderRadius="$md" borderLeftWidth={3} borderLeftColor="#F59E0B">
-                  <HStack justifyContent="space-between" alignItems="flex-start">
-                    <VStack flex={1}>
-                      <Text color="#92400E" fontSize="$xs" fontWeight="$medium" mb="$1">
-                        Editing message
-                      </Text>
-                      <Text color="#1F2937" fontSize="$sm" numberOfLines={2}>
-                        {editingMessage.content}
-                      </Text>
-                    </VStack>
-                    <Box ml="$2">
-                      <Pressable onPress={cancelEdit}>
-                        <Ionicons name="close" size={20} color="#92400E" />
-                      </Pressable>
-                    </Box>
-                  </HStack>
-                </Box>
-              )}
+            {/* Reply Preview */}
+            {replyingToMessage && (
+              <Box bg="#F3F4F6" p="$3" mx="$4" borderRadius="$md" borderLeftWidth={3} borderLeftColor="#8B5CF6">
+                <HStack justifyContent="space-between" alignItems="flex-start">
+                  <VStack flex={1}>
+                    <Text color="#6B7280" fontSize="$xs" fontWeight="$medium" mb="$1">
+                      Replying to {replyingToMessage.is_mine ? "yourself" : (chat?.other_user?.profile?.first_name || "User")}
+                    </Text>
+                    <Text color="#1F2937" fontSize="$sm" numberOfLines={2}>
+                      {replyingToMessage.content}
+                    </Text>
+                  </VStack>
+                  <Box ml="$2">
+                    <Pressable onPress={clearReply}>
+                      <Ionicons name="close" size={20} color="#6B7280" />
+                    </Pressable>
+                  </Box>
+                </HStack>
+              </Box>
+            )}
 
-              {/* Voice Message Preview */}
-              {recordingState.showVoiceMessage && recordingState.recordedAudio && (
-                  <MessageInput
-                    message={editingMessage ? editText : message}
-                    isSending={isSending}
-                    recordingState={recordingState}
-                    isPlaying={audioPlayback.isPlaying}
-                    formatDuration={formatDuration}
-                    onMessageChange={handleMessageChange}
-                    onSend={handleSend}
-                    onStartRecording={startRecording}
-                    onStopRecording={stopRecording}
-                    onCancelRecording={cancelRecording}
-                    onPlayRecordedAudio={playRecordedAudio}
-                    onSendVoiceMessage={sendVoiceMessage}
-                    onFocus={() => setIsInputFocused(true)}
-                    onBlur={() => setIsInputFocused(false)}
-                    onAttachFile={handleAttachFile}
-                  />
-              )}
+            {/* Edit Preview */}
+            {editingMessage && (
+              <Box bg="#FEF3C7" p="$3" mx="$4" borderRadius="$md" borderLeftWidth={3} borderLeftColor="#F59E0B">
+                <HStack justifyContent="space-between" alignItems="flex-start">
+                  <VStack flex={1}>
+                    <Text color="#92400E" fontSize="$xs" fontWeight="$medium" mb="$1">
+                      Editing message
+                    </Text>
+                    <Text color="#1F2937" fontSize="$sm" numberOfLines={2}>
+                      {editingMessage.content}
+                    </Text>
+                  </VStack>
+                  <Box ml="$2">
+                    <Pressable onPress={cancelEdit}>
+                      <Ionicons name="close" size={20} color="#92400E" />
+                    </Pressable>
+                  </Box>
+                </HStack>
+              </Box>
+            )}
 
-              {/* Message Input */}
-              {!recordingState.showVoiceMessage && (
-                  <MessageInput
-                    message={editingMessage ? editText : message}
-                    isSending={isSending || isAttachingFile}
-                    recordingState={recordingState}
-                    isPlaying={audioPlayback.isPlaying}
-                    formatDuration={formatDuration}
-                    onMessageChange={handleMessageChange}
-                    onSend={handleSend}
-                    onStartRecording={startRecording}
-                    onStopRecording={stopRecording}
-                    onCancelRecording={cancelRecording}
-                    onPlayRecordedAudio={playRecordedAudio}
-                    onSendVoiceMessage={sendVoiceMessage}
-                    onFocus={() => setIsInputFocused(true)}
-                    onBlur={() => setIsInputFocused(false)}
-                    onAttachFile={handleAttachFile}
-                  />
-              )}
-            </Box>
-          </KeyboardAvoidingView>
-        </SafeAreaView>
+            {/* Voice Message Preview */}
+            {recordingState.showVoiceMessage && recordingState.recordedAudio && (
+                <MessageInput
+                  message={editingMessage ? editText : message}
+                  isSending={isSending}
+                  recordingState={recordingState}
+                  isPlaying={audioPlayback.isPlaying}
+                  formatDuration={formatDuration}
+                  onMessageChange={handleMessageChange}
+                  onSend={handleSend}
+                  onStartRecording={startRecording}
+                  onStopRecording={stopRecording}
+                  onCancelRecording={cancelRecording}
+                  onPlayRecordedAudio={playRecordedAudio}
+                  onSendVoiceMessage={sendVoiceMessage}
+                  onFocus={() => setIsInputFocused(true)}
+                  onBlur={() => setIsInputFocused(false)}
+                  onAttachFile={handleAttachFile}
+                />
+            )}
+
+            {/* Message Input */}
+            {!recordingState.showVoiceMessage && (
+                <MessageInput
+                  message={editingMessage ? editText : message}
+                  isSending={isSending || isAttachingFile}
+                  recordingState={recordingState}
+                  isPlaying={audioPlayback.isPlaying}
+                  formatDuration={formatDuration}
+                  onMessageChange={handleMessageChange}
+                  onSend={handleSend}
+                  onStartRecording={startRecording}
+                  onStopRecording={stopRecording}
+                  onCancelRecording={cancelRecording}
+                  onPlayRecordedAudio={playRecordedAudio}
+                  onSendVoiceMessage={sendVoiceMessage}
+                  onFocus={() => setIsInputFocused(true)}
+                  onBlur={() => setIsInputFocused(false)}
+                  onAttachFile={handleAttachFile}
+                />
+            )}
+          </Box>
+        </KeyboardAvoidingView>
+      </Box>
       </Box>
   );
 }

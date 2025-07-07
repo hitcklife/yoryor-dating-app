@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/context/auth-context";
 import {
@@ -18,10 +18,16 @@ import {
   Divider,
 } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
+import DebugNotificationCounts from "@/components/DebugNotificationCounts";
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { logout, user } = useAuth();
+  const { logout, user, refreshProfile } = useAuth();
+
+  // Refresh profile data when component mounts
+  useEffect(() => {
+    refreshProfile();
+  }, []);
 
   const handleLogout = async () => {
     try {
@@ -34,22 +40,27 @@ export default function ProfileScreen() {
     }
   };
 
-  // Get user's profile photo URL
-  const getProfilePhotoUrl = () => {
+  // Get user's profile photo URL - optimized for performance
+  const getProfilePhotoUrl = (size: 'thumbnail' | 'medium' = 'medium'): string | null => {
     if (user?.photos && user.photos.length > 0) {
       // Find the profile photo (is_profile_photo = true)
       const profilePhoto = user.photos.find(photo => photo.is_profile_photo);
       if (profilePhoto) {
-        return `https://incredibly-evident-hornet.ngrok-free.app${profilePhoto.photo_url}`;
+        return size === 'thumbnail' 
+          ? (profilePhoto.thumbnail_url || profilePhoto.medium_url || profilePhoto.image_url)
+          : (profilePhoto.medium_url || profilePhoto.image_url || profilePhoto.thumbnail_url);
       }
       // If no profile photo is marked, use the first photo
-      return `http://192.168.20.171:8000${user.photos[0].photo_url}`;
+      const firstPhoto = user.photos[0];
+      return size === 'thumbnail'
+        ? (firstPhoto.thumbnail_url || firstPhoto.medium_url || firstPhoto.image_url)
+        : (firstPhoto.medium_url || firstPhoto.image_url || firstPhoto.thumbnail_url);
     }
     return null;
   };
 
   // Format user's age
-  const calculateAge = (dateOfBirth) => {
+  const calculateAge = (dateOfBirth: string | null | undefined): string => {
     if (!dateOfBirth) return '';
     const birthDate = new Date(dateOfBirth);
     const today = new Date();
@@ -58,11 +69,13 @@ export default function ProfileScreen() {
     if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
       age--;
     }
-    return age;
+    return age.toString();
   };
 
   // Get user's interests from profile
   const interests = user?.profile?.interests || [];
+
+  const profilePhotoUrl = getProfilePhotoUrl('medium'); // Use medium for main display and avatars
 
   return (
     <SafeAreaView flex={1} backgroundColor="#FDF7FD">
@@ -74,16 +87,16 @@ export default function ProfileScreen() {
         {/* Header Section */}
         <Box alignItems="center" pt="$8" pb="$6" px="$4">
           <Avatar size="2xl" mb="$4">
-            {getProfilePhotoUrl() ? (
+            {profilePhotoUrl ? (
               <AvatarImage
                 source={{
-                  uri: getProfilePhotoUrl(),
+                  uri: profilePhotoUrl,
                 }}
                 alt="Profile"
               />
             ) : (
-              <AvatarFallbackText>
-                {user?.profile?.first_name?.charAt(0)}{user?.profile?.last_name?.charAt(0)}
+              <AvatarFallbackText fontSize="$2xl" fontWeight="$bold" color="$primary600">
+                {user?.profile?.first_name?.charAt(0) || 'U'}{user?.profile?.last_name?.charAt(0) || ''}
               </AvatarFallbackText>
             )}
           </Avatar>
@@ -106,95 +119,68 @@ export default function ProfileScreen() {
             {calculateAge(user?.profile?.date_of_birth)}, {user?.profile?.city}{user?.profile?.state ? `, ${user?.profile?.state}` : ''}
           </Text>
 
-          <Pressable
-            flexDirection="row"
-            alignItems="center"
-            bg="$primary600"
-            px="$4"
-            py="$2"
-            borderRadius="$full"
-            onPress={() => {
-              // Handle edit profile
-              console.log("Edit profile pressed");
-            }}
-          >
-            <Ionicons name="pencil" size={16} color="white" />
-            <Text color="$white" fontWeight="$medium" ml="$2">
-              Edit Profile
-            </Text>
-          </Pressable>
+          <HStack space="md">
+            <Pressable
+              flexDirection="row"
+              alignItems="center"
+              bg="$primary600"
+              px="$4"
+              py="$2"
+              borderRadius="$full"
+              onPress={() => {
+                router.push("/profile/edit");
+              }}
+            >
+              <Ionicons name="pencil" size={16} color="white" />
+              <Text color="$white" fontWeight="$medium" ml="$2">
+                Edit Profile
+              </Text>
+            </Pressable>
+            
+            <Pressable
+              flexDirection="row"
+              alignItems="center"
+              bg="$white"
+              borderWidth="$1"
+              borderColor="$primary600"
+              px="$4"
+              py="$2"
+              borderRadius="$full"
+              onPress={() => {
+                router.push("/profile/view");
+              }}
+            >
+              <Ionicons name="eye" size={16} color="#8F3BBF" />
+              <Text color="$primary600" fontWeight="$medium" ml="$2">
+                Preview
+              </Text>
+            </Pressable>
+          </HStack>
         </Box>
 
         {/* Main Content */}
-        <VStack space="lg" px="$4">
-          {/* About Me Section */}
+        <VStack space="lg" px="$4" pb="$20">
+          {/* Debug Section - Temporary */}
           <Box
             bg="$white"
-            p="$4"
             borderRadius="$xl"
             shadowColor="$backgroundLight300"
             shadowOffset={{ width: 0, height: 2 }}
             shadowOpacity={0.1}
             shadowRadius={4}
             elevation={3}
+            overflow="hidden"
           >
             <Text
               fontSize="$lg"
               fontWeight="$semibold"
               color="$primary900"
-              mb="$3"
+              p="$4"
+              pb="$2"
             >
-              About Me
+              Debug Notification Counts
             </Text>
-            <Text
-              fontSize="$md"
-              color="$primary700"
-              lineHeight="$lg"
-            >
-              {user?.profile?.bio || "No bio provided yet."}
-            </Text>
-          </Box>
-
-          {/* Interests Section */}
-          <Box
-            bg="$white"
-            p="$4"
-            borderRadius="$xl"
-            shadowColor="$backgroundLight300"
-            shadowOffset={{ width: 0, height: 2 }}
-            shadowOpacity={0.1}
-            shadowRadius={4}
-            elevation={3}
-          >
-            <Text
-              fontSize="$lg"
-              fontWeight="$semibold"
-              color="$primary900"
-              mb="$3"
-            >
-              Interests
-            </Text>
-            <HStack flexWrap="wrap" gap="$2">
-              {interests && interests.length > 0 ? (
-                interests.map((interest, index) => (
-                  <Badge
-                    key={index}
-                    variant="outline"
-                    borderColor="$primary300"
-                    bg="$primary50"
-                    mb="$2"
-                  >
-                    <BadgeText color="$primary700" fontSize="$sm" textTransform="capitalize">
-                      {interest}
-                    </BadgeText>
-                  </Badge>
-                ))
-              ) : (
-                <Text fontSize="$sm" color="$primary700">
-                  No interests specified yet.
-                </Text>
-              )}
-            </HStack>
+            <DebugNotificationCounts />
           </Box>
 
           {/* Account Settings Section */}
@@ -221,8 +207,7 @@ export default function ProfileScreen() {
             {/* Notifications */}
             <Pressable
               onPress={() => {
-                // Handle notifications
-                console.log("Notifications pressed");
+                router.push("/settings/notifications");
               }}
             >
               <HStack
@@ -262,8 +247,7 @@ export default function ProfileScreen() {
             {/* Privacy */}
             <Pressable
               onPress={() => {
-                // Handle privacy
-                console.log("Privacy pressed");
+                router.push("/settings/privacy");
               }}
             >
               <HStack
@@ -300,11 +284,130 @@ export default function ProfileScreen() {
 
             <Divider bg="$backgroundLight200" />
 
+            {/* Account Management */}
+            <Pressable
+              onPress={() => {
+                router.push("/settings/account-management");
+              }}
+            >
+              <HStack
+                alignItems="center"
+                px="$4"
+                py="$3"
+                space="md"
+              >
+                <Box
+                  w="$8"
+                  h="$8"
+                  bg="$primary100"
+                  alignItems="center"
+                  justifyContent="center"
+                  borderRadius="$md"
+                >
+                  <Ionicons
+                    name="person-outline"
+                    size={20}
+                    color="#5B1994"
+                  />
+                </Box>
+                <Text
+                  flex={1}
+                  fontSize="$md"
+                  color="$primary900"
+                  fontWeight="$medium"
+                >
+                  Account Management
+                </Text>
+                <Ionicons name="chevron-forward" size={20} color="#5B1994" />
+              </HStack>
+            </Pressable>
+
+            <Divider bg="$backgroundLight200" />
+
+            {/* Discovery Settings */}
+            <Pressable
+              onPress={() => {
+                router.push("/settings/discovery-settings");
+              }}
+            >
+              <HStack
+                alignItems="center"
+                px="$4"
+                py="$3"
+                space="md"
+              >
+                <Box
+                  w="$8"
+                  h="$8"
+                  bg="$primary100"
+                  alignItems="center"
+                  justifyContent="center"
+                  borderRadius="$md"
+                >
+                  <Ionicons
+                    name="search-outline"
+                    size={20}
+                    color="#5B1994"
+                  />
+                </Box>
+                <Text
+                  flex={1}
+                  fontSize="$md"
+                  color="$primary900"
+                  fontWeight="$medium"
+                >
+                  Discovery Settings
+                </Text>
+                <Ionicons name="chevron-forward" size={20} color="#5B1994" />
+              </HStack>
+            </Pressable>
+
+            <Divider bg="$backgroundLight200" />
+
+            {/* Safety & Security */}
+            <Pressable
+              onPress={() => {
+                router.push("/settings/safety-security");
+              }}
+            >
+              <HStack
+                alignItems="center"
+                px="$4"
+                py="$3"
+                space="md"
+              >
+                <Box
+                  w="$8"
+                  h="$8"
+                  bg="$primary100"
+                  alignItems="center"
+                  justifyContent="center"
+                  borderRadius="$md"
+                >
+                  <Ionicons
+                    name="shield-checkmark-outline"
+                    size={20}
+                    color="#5B1994"
+                  />
+                </Box>
+                <Text
+                  flex={1}
+                  fontSize="$md"
+                  color="$primary900"
+                  fontWeight="$medium"
+                >
+                  Safety & Security
+                </Text>
+                <Ionicons name="chevron-forward" size={20} color="#5B1994" />
+              </HStack>
+            </Pressable>
+
+            <Divider bg="$backgroundLight200" />
+
             {/* Help & Support */}
             <Pressable
               onPress={() => {
-                // Handle help & support
-                console.log("Help & Support pressed");
+                router.push("/settings/help-support");
               }}
             >
               <HStack

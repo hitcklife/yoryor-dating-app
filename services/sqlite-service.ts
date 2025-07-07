@@ -8,7 +8,7 @@ import * as FileSystem from 'expo-file-system';
  */
 class SQLiteService {
   private db: SQLite.SQLiteDatabase | null = null;
-  private dbVersion = 2; // Updated to version 2 to include read status columns
+  private dbVersion = 3; // Updated to version 3 to include notification counts table
   private isInitialized: boolean = false;
   private lastError: Error | null = null;
 
@@ -25,35 +25,44 @@ class SQLiteService {
   }
 
   /**
-   * Initialize the database by creating necessary tables if they don't exist
-   * and handling database versioning
+   * Initialize the database connection and create tables
    */
   private async initDatabase(): Promise<void> {
     try {
+      console.log('Initializing SQLite database...');
+      
+      // Open the database
       this.db = await SQLite.openDatabaseAsync('yoryor_chats.db');
-      
-      // Create tables first
-      await this.createTables();
-      
-      // Check if the version table exists and get the current version
-      const { exists, version } = await this.checkDatabaseVersion();
+      console.log('Database opened successfully');
 
-      if (!exists) {
-        // Create the version table if it doesn't exist
+      // Check database version and migrate if needed
+      const versionInfo = await this.checkDatabaseVersion();
+      console.log('Database version info:', versionInfo);
+
+      if (!versionInfo.exists) {
+        console.log('Database is new, creating tables...');
+        await this.createTables();
         await this.createVersionTable();
-      } else if (version < this.dbVersion) {
-        // Migrate the database if the version is lower than the current version
-        await this.migrateDatabase(version, this.dbVersion);
-      } else if (version > this.dbVersion) {
-        // If the database version is higher than the code version, update the code version
-        console.warn(`Database version (${version}) is higher than code version (${this.dbVersion}). Updating code version.`);
-        this.dbVersion = version;
+        console.log('New database setup completed');
+      } else if (versionInfo.version < this.dbVersion) {
+        console.log(`Database needs migration from version ${versionInfo.version} to ${this.dbVersion}`);
+        await this.migrateDatabase(versionInfo.version, this.dbVersion);
+        console.log('Database migration completed');
       }
 
-      console.log('Database initialized successfully');
+      console.log('Database initialization completed');
     } catch (error) {
       console.error('Error initializing database:', error);
-      throw error;
+      
+      // If there's an error during initialization, try to reset the database
+      console.log('Attempting database reset due to initialization error...');
+      try {
+        await this.resetDatabase();
+      } catch (resetError) {
+        console.error('Error resetting database:', resetError);
+        this.lastError = resetError instanceof Error ? resetError : new Error('Database reset failed');
+        throw resetError;
+      }
     }
   }
 
@@ -199,6 +208,18 @@ class SQLiteService {
           )
         `);
 
+        // Notification counts table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS notification_counts (
+            id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            unread_messages_count INTEGER DEFAULT 0,
+            new_likes_count INTEGER DEFAULT 0,
+            created_at TEXT,
+            updated_at TEXT
+          )
+        `);
+
         // Create indexes for better query performance
         await this.createIndexes();
 
@@ -220,6 +241,7 @@ class SQLiteService {
       // Chat indexes
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_chats_last_activity ON chats (last_activity_at DESC)');
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_chats_deleted ON chats (deleted_at)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_chats_unread_count ON chats (unread_count DESC)');
 
       // Message indexes for fast retrieval
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages (chat_id)');
@@ -228,16 +250,29 @@ class SQLiteService {
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status)');
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_deleted ON messages (deleted_at)');
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to_message_id)');
+      
+      // NEW: Critical message indexes for better performance
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages (sender_id)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_is_mine ON messages (is_mine)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_is_read ON messages (is_read)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_type ON messages (message_type)');
 
       // Other user indexes
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_other_users_chat_id ON other_users (chat_id)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_other_users_email ON other_users (email)');
 
       // Profile indexes
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles (user_id)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profiles_gender ON profiles (gender)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profiles_looking_for ON profiles (looking_for)');
 
       // Profile photo indexes
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profile_photos_user_id ON profile_photos (user_id)');
       await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profile_photos_is_profile ON profile_photos (is_profile_photo)');
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profile_photos_order ON profile_photos (order_num)');
+
+      // Notification counts indexes
+      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_notification_counts_user_id ON notification_counts (user_id)');
 
       console.log('Database indexes created successfully');
     } catch (error) {
@@ -264,7 +299,6 @@ class SQLiteService {
     }
   }
 
-
   /**
    * Store chat details (chat + messages) to the local database
    * @param chat The chat to store
@@ -275,7 +309,7 @@ class SQLiteService {
 
     try {
       await this.db.withTransactionAsync(async () => {
-        // Save the chat (without transaction inside since we're already in one)
+        // Save the chat
         await this.db!.runAsync(`
           INSERT OR REPLACE INTO chats (
             id, type, name, description, last_activity_at, is_active, 
@@ -293,26 +327,153 @@ class SQLiteService {
           chat.created_at,
           chat.updated_at,
           chat.deleted_at,
-          chat.unread_count,
-          chat.pivot.chat_id,
-          chat.pivot.user_id,
-          chat.pivot.is_muted ? 1 : 0,
-          chat.pivot.last_read_at,
-          chat.pivot.joined_at,
-          chat.pivot.left_at,
-          chat.pivot.role,
-          chat.pivot.created_at,
-          chat.pivot.updated_at
+          chat.unread_count || 0,
+          chat.other_user?.pivot?.chat_id || chat.id,
+          chat.other_user?.pivot?.user_id || 0,
+          chat.other_user?.pivot?.is_muted ? 1 : 0,
+          chat.other_user?.pivot?.last_read_at || null,
+          chat.other_user?.pivot?.joined_at || chat.created_at,
+          chat.other_user?.pivot?.left_at || null,
+          chat.other_user?.pivot?.role || 'member',
+          chat.other_user?.pivot?.created_at || chat.created_at,
+          chat.other_user?.pivot?.updated_at || chat.updated_at
         ]);
 
         // Save other user if exists
         if (chat.other_user) {
-          await this.saveOtherUserInternal(chat.id, chat.other_user);
+          const user = chat.other_user;
+          
+          // Save user
+          await this.db!.runAsync(`
+            INSERT OR REPLACE INTO other_users (
+              id, chat_id, email, phone, google_id, facebook_id,
+              email_verified_at, phone_verified_at, disabled_at,
+              registration_completed, is_admin, is_private, profile_photo_path,
+              last_active_at, deleted_at, created_at, updated_at,
+              two_factor_enabled, last_login_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            user.id,
+            chat.id,
+            user.email,
+            user.phone,
+            user.google_id,
+            user.facebook_id,
+            user.email_verified_at,
+            user.phone_verified_at,
+            user.disabled_at,
+            user.registration_completed ? 1 : 0,
+            user.is_admin ? 1 : 0,
+            user.is_private ? 1 : 0,
+            user.profile_photo_path,
+            user.last_active_at,
+            user.deleted_at,
+            user.created_at,
+            user.updated_at,
+            user.two_factor_enabled ? 1 : 0,
+            user.last_login_at
+          ]);
+
+          // Save profile if exists
+          if (user.profile) {
+            const profile = user.profile;
+            await this.db!.runAsync(`
+              INSERT OR REPLACE INTO profiles (
+                id, user_id, first_name, last_name, gender, date_of_birth,
+                age, city, state, province, country_id, latitude, longitude,
+                bio, interests, looking_for, profile_views, profile_completed_at,
+                status, occupation, profession, country_code, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+              profile.id,
+              user.id,
+              profile.first_name,
+              profile.last_name,
+              profile.gender,
+              profile.date_of_birth,
+              profile.age,
+              profile.city,
+              profile.state,
+              profile.province,
+              profile.country_id,
+              profile.latitude,
+              profile.longitude,
+              profile.bio,
+              JSON.stringify(profile.interests),
+              profile.looking_for,
+              profile.profile_views,
+              profile.profile_completed_at,
+              profile.status,
+              profile.occupation,
+              profile.profession,
+              profile.country_code,
+              profile.created_at,
+              profile.updated_at
+            ]);
+          }
+
+          // Save profile photo if exists
+          if (user.profile_photo) {
+            const photo = user.profile_photo;
+            await this.db!.runAsync(`
+              INSERT OR REPLACE INTO profile_photos (
+                id, user_id, original_url, thumbnail_url, medium_url,
+                is_profile_photo, order_num, is_private, is_verified,
+                status, rejection_reason, metadata, uploaded_at,
+                deleted_at, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+              photo.id,
+              user.id,
+              photo.original_url,
+              photo.thumbnail_url,
+              photo.medium_url,
+              photo.is_profile_photo ? 1 : 0,
+              photo.order,
+              photo.is_private ? 1 : 0,
+              photo.is_verified ? 1 : 0,
+              photo.status,
+              photo.rejection_reason,
+              photo.metadata ? JSON.stringify(photo.metadata) : null,
+              photo.uploaded_at,
+              photo.deleted_at,
+              photo.created_at,
+              photo.updated_at
+            ]);
+          }
         }
 
         // Save all messages
         for (const message of messages) {
-          await this.saveMessageInternal(message);
+          await this.db!.runAsync(`
+            INSERT OR REPLACE INTO messages (
+              id, chat_id, sender_id, reply_to_message_id, content,
+              message_type, media_data, media_url, thumbnail_url,
+              status, is_edited, edited_at, sent_at, deleted_at,
+              created_at, updated_at, is_mine, sender_email, is_read, read_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            message.id,
+            message.chat_id,
+            message.sender_id,
+            message.reply_to_message_id,
+            message.content,
+            message.message_type,
+            message.media_data ? JSON.stringify(message.media_data) : null,
+            message.media_url,
+            message.thumbnail_url,
+            message.status,
+            message.is_edited ? 1 : 0,
+            message.edited_at,
+            message.sent_at,
+            message.deleted_at,
+            message.created_at,
+            message.updated_at,
+            message.is_mine ? 1 : 0,
+            message.sender?.email || null,
+            message.is_read ? 1 : 0,
+            message.read_at || null
+          ]);
         }
       });
       console.log(`Chat details for chat ${chat.id} stored successfully`);
@@ -321,7 +482,6 @@ class SQLiteService {
       throw error;
     }
   }
-
 
   /**
    * Get messages by chat ID ordered by newest first (for inverted FlatList)
@@ -379,243 +539,192 @@ class SQLiteService {
     if (!this.db) throw new Error('Database not initialized');
 
     try {
+      console.log(`Starting to store ${chats.length} chats in SQLite...`);
+      
+      // Use a single transaction for all operations
       await this.db.withTransactionAsync(async () => {
         for (const chat of chats) {
-          // Save chat without nested transaction
-          await this.db!.runAsync(`
-            INSERT OR REPLACE INTO chats (
-              id, type, name, description, last_activity_at, is_active, 
-              created_at, updated_at, deleted_at, unread_count,
-              pivot_chat_id, pivot_user_id, pivot_is_muted, pivot_last_read_at,
-              pivot_joined_at, pivot_left_at, pivot_role, pivot_created_at, pivot_updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [
-            chat.id,
-            chat.type,
-            chat.name,
-            chat.description,
-            chat.last_activity_at,
-            chat.is_active ? 1 : 0,
-            chat.created_at,
-            chat.updated_at,
-            chat.deleted_at,
-            chat.unread_count,
-            chat.pivot.chat_id,
-            chat.pivot.user_id,
-            chat.pivot.is_muted ? 1 : 0,
-            chat.pivot.last_read_at,
-            chat.pivot.joined_at,
-            chat.pivot.left_at,
-            chat.pivot.role,
-            chat.pivot.created_at,
-            chat.pivot.updated_at
-          ]);
+          try {
+            // Save chat
+            await this.db!.runAsync(`
+              INSERT OR REPLACE INTO chats (
+                id, type, name, description, last_activity_at, is_active, 
+                created_at, updated_at, deleted_at, unread_count,
+                pivot_chat_id, pivot_user_id, pivot_is_muted, pivot_last_read_at,
+                pivot_joined_at, pivot_left_at, pivot_role, pivot_created_at, pivot_updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `, [
+              chat.id,
+              chat.type,
+              chat.name,
+              chat.description,
+              chat.last_activity_at,
+              chat.is_active ? 1 : 0,
+              chat.created_at,
+              chat.updated_at,
+              chat.deleted_at,
+              chat.unread_count,
+              chat.pivot.chat_id,
+              chat.pivot.user_id,
+              chat.pivot.is_muted ? 1 : 0,
+              chat.pivot.last_read_at,
+              chat.pivot.joined_at,
+              chat.pivot.left_at,
+              chat.pivot.role,
+              chat.pivot.created_at,
+              chat.pivot.updated_at
+            ]);
 
-          // Save other user if exists
-          if (chat.other_user) {
-            await this.saveOtherUserInternal(chat.id, chat.other_user);
-          }
+            // Save other user if exists (without the pivot data which is for the other user)
+            if (chat.other_user) {
+              const user = chat.other_user;
+              
+              // Save user (excluding the pivot data which is for the other user's relationship)
+              await this.db!.runAsync(`
+                INSERT OR REPLACE INTO other_users (
+                  id, chat_id, email, phone, google_id, facebook_id,
+                  email_verified_at, phone_verified_at, disabled_at,
+                  registration_completed, is_admin, is_private, profile_photo_path,
+                  last_active_at, deleted_at, created_at, updated_at,
+                  two_factor_enabled, last_login_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `, [
+                user.id,
+                chat.id,
+                user.email,
+                user.phone,
+                user.google_id,
+                user.facebook_id,
+                user.email_verified_at,
+                user.phone_verified_at,
+                user.disabled_at,
+                user.registration_completed ? 1 : 0,
+                user.is_admin ? 1 : 0,
+                user.is_private ? 1 : 0,
+                user.profile_photo_path,
+                user.last_active_at,
+                user.deleted_at,
+                user.created_at,
+                user.updated_at,
+                user.two_factor_enabled ? 1 : 0,
+                user.last_login_at
+              ]);
 
-          // Save last message if exists
-          if (chat.last_message) {
-            await this.saveMessageInternal(chat.last_message);
+              // Save profile if exists
+              if (user.profile) {
+                const profile = user.profile;
+                await this.db!.runAsync(`
+                  INSERT OR REPLACE INTO profiles (
+                    id, user_id, first_name, last_name, gender, date_of_birth,
+                    age, city, state, province, country_id, latitude, longitude,
+                    bio, interests, looking_for, profile_views, profile_completed_at,
+                    status, occupation, profession, country_code, created_at, updated_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [
+                  profile.id,
+                  user.id,
+                  profile.first_name || '',
+                  profile.last_name || '',
+                  profile.gender || '',
+                  profile.date_of_birth || '',
+                  profile.age || 0,
+                  profile.city || '',
+                  profile.state || '',
+                  profile.province || '',
+                  profile.country_id || 0,
+                  profile.latitude || 0,
+                  profile.longitude || 0,
+                  profile.bio || '',
+                  JSON.stringify(profile.interests || []),
+                  profile.looking_for || '',
+                  profile.profile_views || 0,
+                  profile.profile_completed_at || '',
+                  profile.status || '',
+                  profile.occupation || '',
+                  profile.profession || '',
+                  profile.country_code || '',
+                  profile.created_at || '',
+                  profile.updated_at || ''
+                ]);
+              }
+
+              // Save profile photo if exists
+              if (user.profile_photo) {
+                const photo = user.profile_photo;
+                await this.db!.runAsync(`
+                  INSERT OR REPLACE INTO profile_photos (
+                    id, user_id, original_url, thumbnail_url, medium_url,
+                    is_profile_photo, order_num, is_private, is_verified,
+                    status, rejection_reason, metadata, uploaded_at,
+                    deleted_at, created_at, updated_at
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `, [
+                  photo.id,
+                  user.id,
+                  photo.original_url,
+                  photo.thumbnail_url,
+                  photo.medium_url,
+                  photo.is_profile_photo ? 1 : 0,
+                  photo.order || 0,
+                  photo.is_private ? 1 : 0,
+                  photo.is_verified ? 1 : 0,
+                  photo.status || 'active',
+                  photo.rejection_reason || null,
+                  photo.metadata ? JSON.stringify(photo.metadata) : null,
+                  photo.uploaded_at || '',
+                  photo.deleted_at || null,
+                  photo.created_at || '',
+                  photo.updated_at || ''
+                ]);
+              }
+            }
+
+            // Save last message if exists
+            if (chat.last_message) {
+              const message = chat.last_message;
+              await this.db!.runAsync(`
+                INSERT OR REPLACE INTO messages (
+                  id, chat_id, sender_id, reply_to_message_id, content,
+                  message_type, media_data, media_url, thumbnail_url,
+                  status, is_edited, edited_at, sent_at, deleted_at,
+                  created_at, updated_at, is_mine, sender_email, is_read, read_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              `, [
+                message.id,
+                message.chat_id,
+                message.sender_id,
+                message.reply_to_message_id,
+                message.content,
+                message.message_type,
+                message.media_data ? JSON.stringify(message.media_data) : null,
+                message.media_url,
+                message.thumbnail_url,
+                message.status,
+                message.is_edited ? 1 : 0,
+                message.edited_at,
+                message.sent_at,
+                message.deleted_at,
+                message.created_at,
+                message.updated_at,
+                message.is_mine ? 1 : 0,
+                message.sender?.email || null,
+                message.is_read ? 1 : 0,
+                message.read_at || null
+              ]);
+            }
+          } catch (chatError) {
+            console.error(`Error storing chat ${chat.id}:`, chatError);
+            // Continue with other chats instead of failing the entire transaction
           }
         }
       });
       console.log(`${chats.length} chats stored successfully`);
     } catch (error) {
       console.error('Error storing chats:', error);
-      throw error;
+      // Don't throw the error, just log it to prevent app crashes
+      // The API data is still valid even if local storage fails
     }
   }
-
-
-  /**
-   * Internal method to save message (without transaction)
-   * @param message The message to save
-   */
-  private async saveMessageInternal(message: Message): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-
-    await this.db.runAsync(`
-      INSERT OR REPLACE INTO messages (
-        id, chat_id, sender_id, reply_to_message_id, content,
-        message_type, media_data, media_url, thumbnail_url,
-        status, is_edited, edited_at, sent_at, deleted_at,
-        created_at, updated_at, is_mine, sender_email, is_read, read_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      message.id,
-      message.chat_id,
-      message.sender_id,
-      message.reply_to_message_id,
-      message.content,
-      message.message_type,
-      message.media_data ? JSON.stringify(message.media_data) : null,
-      message.media_url,
-      message.thumbnail_url,
-      message.status,
-      message.is_edited ? 1 : 0,
-      message.edited_at,
-      message.sent_at,
-      message.deleted_at,
-      message.created_at,
-      message.updated_at,
-      message.is_mine ? 1 : 0,
-      message.sender?.email || null,
-      message.is_read ? 1 : 0,
-      message.read_at || null
-    ]);
-  }
-
-
-
-  /**
-   * Internal method to save other user (without transaction)
-   * @param chatId The chat ID this user belongs to
-   * @param user The user to save
-   */
-  private async saveOtherUserInternal(chatId: number, user: OtherUser): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-
-    await this.db.runAsync(`
-      INSERT OR REPLACE INTO other_users (
-        id, chat_id, email, phone, google_id, facebook_id, email_verified_at,
-        phone_verified_at, disabled_at, registration_completed, is_admin,
-        is_private, profile_photo_path, last_active_at, deleted_at,
-        created_at, updated_at, two_factor_enabled, last_login_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      user.id,
-      chatId,
-      user.email,
-      user.phone,
-      user.google_id,
-      user.facebook_id,
-      user.email_verified_at,
-      user.phone_verified_at,
-      user.disabled_at,
-      user.registration_completed ? 1 : 0,
-      user.is_admin ? 1 : 0,
-      user.is_private ? 1 : 0,
-      user.profile_photo_path,
-      user.last_active_at,
-      user.deleted_at,
-      user.created_at,
-      user.updated_at,
-      user.two_factor_enabled ? 1 : 0,
-      user.last_login_at
-    ]);
-
-    // Save profile if exists
-    if (user.profile) {
-      await this.saveProfileInternal(user.id, user.profile);
-    }
-
-    // Save profile photo if exists
-    if (user.profile_photo) {
-      await this.saveProfilePhotoInternal(user.id, user.profile_photo);
-    }
-  }
-
-
-  /**
-   * Internal method to save profile (without transaction)
-   * @param userId The user ID this profile belongs to
-   * @param profile The profile to save
-   */
-  private async saveProfileInternal(userId: number, profile: Profile): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-
-    await this.db.runAsync(`
-      INSERT OR REPLACE INTO profiles (
-        id, user_id, first_name, last_name, gender, date_of_birth,
-        age, city, state, province, country_id, latitude, longitude,
-        bio, interests, looking_for, profile_views, profile_completed_at,
-        status, occupation, profession, country_code, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      profile.id,
-      userId,
-      profile.first_name,
-      profile.last_name,
-      profile.gender,
-      profile.date_of_birth,
-      profile.age,
-      profile.city,
-      profile.state,
-      profile.province,
-      profile.country_id,
-      profile.latitude,
-      profile.longitude,
-      profile.bio,
-      JSON.stringify(profile.interests),
-      profile.looking_for,
-      profile.profile_views,
-      profile.profile_completed_at,
-      profile.status,
-      profile.occupation,
-      profile.profession,
-      profile.country_code,
-      profile.created_at,
-      profile.updated_at
-    ]);
-  }
-
-
-  /**
-   * Internal method to save profile photo (without transaction)
-   * @param userId The user ID this photo belongs to
-   * @param photo The profile photo to save
-   */
-  private async saveProfilePhotoInternal(userId: number, photo: ProfilePhoto): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-
-    await this.db.runAsync(`
-      INSERT OR REPLACE INTO profile_photos (
-        id, user_id, original_url, thumbnail_url, medium_url,
-        is_profile_photo, order_num, is_private, is_verified,
-        status, rejection_reason, metadata, uploaded_at,
-        deleted_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      photo.id,
-      userId,
-      photo.original_url,
-      photo.thumbnail_url,
-      photo.medium_url,
-      photo.is_profile_photo ? 1 : 0,
-      photo.order,
-      photo.is_private ? 1 : 0,
-      photo.is_verified ? 1 : 0,
-      photo.status,
-      photo.rejection_reason,
-      photo.metadata ? JSON.stringify(photo.metadata) : null,
-      photo.uploaded_at,
-      photo.deleted_at,
-      photo.created_at,
-      photo.updated_at
-    ]);
-  }
-
-
-
-  /**
-   * Store a single message in the database
-   * @param message The message to store
-   */
-  async storeMessage(message: Message): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
-
-    try {
-      await this.saveMessage(message);
-      console.log(`Message ${message.id} stored successfully`);
-    } catch (error) {
-      console.error('Error storing message:', error);
-      throw error;
-    }
-  }
-
 
   /**
    * Create the version table
@@ -665,6 +774,36 @@ class SQLiteService {
             ALTER TABLE messages ADD COLUMN read_at TEXT
           `);
           console.log('Added read_at column to messages table');
+        }
+      }
+
+      // Migration from version 2 to 3: Add notification_counts table
+      if (fromVersion < 3 && toVersion >= 3) {
+        console.log('Adding notification_counts table...');
+        
+        // Check if table already exists
+        const tableExists = await this.db.getFirstAsync<any>(`
+          SELECT name FROM sqlite_master WHERE type='table' AND name='notification_counts'
+        `);
+        
+        if (!tableExists) {
+          await this.db.execAsync(`
+            CREATE TABLE notification_counts (
+              id INTEGER PRIMARY KEY,
+              user_id INTEGER,
+              unread_messages_count INTEGER DEFAULT 0,
+              new_likes_count INTEGER DEFAULT 0,
+              created_at TEXT,
+              updated_at TEXT
+            )
+          `);
+          
+          // Create index for notification_counts
+          await this.db.execAsync(`
+            CREATE INDEX idx_notification_counts_user_id ON notification_counts (user_id)
+          `);
+          
+          console.log('Added notification_counts table and index');
         }
       }
 
@@ -731,7 +870,6 @@ class SQLiteService {
       throw error;
     }
   }
-
 
   /**
    * Save an other user to the local database
@@ -916,9 +1054,38 @@ class SQLiteService {
     try {
       await this.db.withTransactionAsync(async () => {
         for (const message of messages) {
-          await this.saveMessage(message);
+          await this.db!.runAsync(`
+            INSERT OR REPLACE INTO messages (
+              id, chat_id, sender_id, reply_to_message_id, content,
+              message_type, media_data, media_url, thumbnail_url,
+              status, is_edited, edited_at, sent_at, deleted_at,
+              created_at, updated_at, is_mine, sender_email, is_read, read_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `, [
+            message.id,
+            message.chat_id,
+            message.sender_id,
+            message.reply_to_message_id,
+            message.content,
+            message.message_type,
+            message.media_data ? JSON.stringify(message.media_data) : null,
+            message.media_url,
+            message.thumbnail_url,
+            message.status,
+            message.is_edited ? 1 : 0,
+            message.edited_at,
+            message.sent_at,
+            message.deleted_at,
+            message.created_at,
+            message.updated_at,
+            message.is_mine ? 1 : 0,
+            message.sender?.email || null,
+            message.is_read ? 1 : 0,
+            message.read_at || null
+          ]);
         }
       });
+      console.log(`${messages.length} messages saved successfully`);
     } catch (error) {
       console.error('Error saving messages:', error);
       throw error;
@@ -1070,7 +1237,7 @@ class SQLiteService {
       // Get the profile photo for this user
       const profilePhoto = await this.getProfilePhotoForUser(userRow.id);
 
-      // Create the pivot object
+      // Create the pivot object with default values
       const pivot: UserPivot = {
         chat_id: chatId,
         user_id: userRow.id,
@@ -1309,8 +1476,6 @@ class SQLiteService {
     }
   }
 
-
-
   /**
    * Check if messages exist for a chat before a specific message ID
    * @param chatId The chat ID
@@ -1401,7 +1566,6 @@ class SQLiteService {
       return false;
     }
   }
-
 
   /**
    * Delete a chat and all related data
@@ -1613,16 +1777,46 @@ class SQLiteService {
     if (!this.db) throw new Error('Database not initialized');
 
     try {
-      // First save the message
-      await this.saveMessage(message);
-      
-      // Then update the chat's last_activity_at
-      const timestamp = message.sent_at || message.created_at || new Date().toISOString();
-      await this.db.runAsync(`
-        UPDATE chats 
-        SET last_activity_at = ?, updated_at = datetime('now', 'utc')
-        WHERE id = ?
-      `, [timestamp, chatId]);
+      await this.db.withTransactionAsync(async () => {
+        // Save the message first
+        await this.db!.runAsync(`
+          INSERT OR REPLACE INTO messages (
+            id, chat_id, sender_id, reply_to_message_id, content,
+            message_type, media_data, media_url, thumbnail_url,
+            status, is_edited, edited_at, sent_at, deleted_at,
+            created_at, updated_at, is_mine, sender_email, is_read, read_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          message.id,
+          message.chat_id,
+          message.sender_id,
+          message.reply_to_message_id,
+          message.content,
+          message.message_type,
+          message.media_data ? JSON.stringify(message.media_data) : null,
+          message.media_url,
+          message.thumbnail_url,
+          message.status,
+          message.is_edited ? 1 : 0,
+          message.edited_at,
+          message.sent_at,
+          message.deleted_at,
+          message.created_at,
+          message.updated_at,
+          message.is_mine ? 1 : 0,
+          message.sender?.email || null,
+          message.is_read ? 1 : 0,
+          message.read_at || null
+        ]);
+        
+        // Then update the chat's last_activity_at
+        const timestamp = message.sent_at || message.created_at || new Date().toISOString();
+        await this.db!.runAsync(`
+          UPDATE chats 
+          SET last_activity_at = ?, updated_at = datetime('now', 'utc')
+          WHERE id = ?
+        `, [timestamp, chatId]);
+      });
       
       console.log(`Updated last message for chat ${chatId}`);
     } catch (error) {
@@ -1713,38 +1907,49 @@ class SQLiteService {
     try {
       console.log('Checking for missing columns...');
       
-      // Check if columns exist
-      const tableInfo = await this.db.getAllAsync<any>(`
-        PRAGMA table_info(messages)
-      `);
-      
-      const hasIsRead = tableInfo.some((col: any) => col.name === 'is_read');
-      const hasReadAt = tableInfo.some((col: any) => col.name === 'read_at');
-      
-      console.log('Current columns:', tableInfo.map((col: any) => col.name));
-      console.log('Has is_read:', hasIsRead);
-      console.log('Has read_at:', hasReadAt);
-      
-      if (!hasIsRead) {
-        console.log('Adding is_read column...');
-        await this.db.execAsync(`
-          ALTER TABLE messages ADD COLUMN is_read INTEGER DEFAULT 0
+      // Use a transaction to ensure atomicity
+      await this.db.withTransactionAsync(async () => {
+        // Check if columns exist
+        const tableInfo = await this.db!.getAllAsync<any>(`
+          PRAGMA table_info(messages)
         `);
-        console.log('Successfully added is_read column');
-      }
-      
-      if (!hasReadAt) {
-        console.log('Adding read_at column...');
-        await this.db.execAsync(`
-          ALTER TABLE messages ADD COLUMN read_at TEXT
-        `);
-        console.log('Successfully added read_at column');
-      }
-      
-      console.log('All required columns are present');
+        
+        const hasIsRead = tableInfo.some((col: any) => col.name === 'is_read');
+        const hasReadAt = tableInfo.some((col: any) => col.name === 'read_at');
+        
+        console.log('Current columns:', tableInfo.map((col: any) => col.name));
+        console.log('Has is_read:', hasIsRead);
+        console.log('Has read_at:', hasReadAt);
+        
+        if (!hasIsRead) {
+          console.log('Adding is_read column...');
+          await this.db!.execAsync(`
+            ALTER TABLE messages ADD COLUMN is_read INTEGER DEFAULT 0
+          `);
+          console.log('Successfully added is_read column');
+        }
+        
+        if (!hasReadAt) {
+          console.log('Adding read_at column...');
+          await this.db!.execAsync(`
+            ALTER TABLE messages ADD COLUMN read_at TEXT
+          `);
+          console.log('Successfully added read_at column');
+        }
+        
+        console.log('All required columns are present');
+      });
     } catch (error) {
       console.error('Error adding missing columns:', error);
-      throw error;
+      
+      // If there's an error with missing columns, try to recreate the database
+      console.log('Attempting to reset database due to column errors...');
+      try {
+        await this.resetDatabase();
+      } catch (resetError) {
+        console.error('Error resetting database:', resetError);
+        throw resetError;
+      }
     }
   }
 
@@ -1793,6 +1998,455 @@ class SQLiteService {
     } catch (error) {
       console.error('Error getting initial messages by chat ID:', error);
       throw error;
+    }
+  }
+
+  // ==================== NOTIFICATION COUNTS METHODS ====================
+
+  /**
+   * Get notification counts for a user
+   * @param userId The user ID
+   * @returns Object with unread_messages_count and new_likes_count
+   */
+  async getNotificationCounts(userId: number): Promise<{ unread_messages_count: number; new_likes_count: number }> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const result = await this.db.getFirstAsync<any>(`
+        SELECT unread_messages_count, new_likes_count 
+        FROM notification_counts 
+        WHERE user_id = ?
+      `, [userId]);
+
+      if (result) {
+        return {
+          unread_messages_count: result.unread_messages_count || 0,
+          new_likes_count: result.new_likes_count || 0
+        };
+      }
+
+      // If no record exists, create one with default values
+      await this.createNotificationCountsRecord(userId);
+      return { unread_messages_count: 0, new_likes_count: 0 };
+    } catch (error) {
+      console.error('Error getting notification counts:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create a notification counts record for a user
+   * @param userId The user ID
+   */
+  async createNotificationCountsRecord(userId: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT OR IGNORE INTO notification_counts (
+          user_id, unread_messages_count, new_likes_count, created_at, updated_at
+        ) VALUES (?, 0, 0, ?, ?)
+      `, [userId, now, now]);
+    } catch (error) {
+      console.error('Error creating notification counts record:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update unread messages count for a user
+   * @param userId The user ID
+   * @param count The new count (or increment if not specified)
+   * @param increment Whether to increment the existing count
+   */
+  async updateUnreadMessagesCount(userId: number, count?: number, increment: boolean = false): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      
+      if (increment) {
+        await this.db.runAsync(`
+          INSERT OR REPLACE INTO notification_counts (
+            user_id, unread_messages_count, new_likes_count, created_at, updated_at
+          ) VALUES (
+            ?, 
+            COALESCE((SELECT unread_messages_count FROM notification_counts WHERE user_id = ?), 0) + 1,
+            COALESCE((SELECT new_likes_count FROM notification_counts WHERE user_id = ?), 0),
+            COALESCE((SELECT created_at FROM notification_counts WHERE user_id = ?), ?),
+            ?
+          )
+        `, [userId, userId, userId, userId, now, now]);
+      } else {
+        await this.db.runAsync(`
+          INSERT OR REPLACE INTO notification_counts (
+            user_id, unread_messages_count, new_likes_count, created_at, updated_at
+          ) VALUES (
+            ?, 
+            ?,
+            COALESCE((SELECT new_likes_count FROM notification_counts WHERE user_id = ?), 0),
+            COALESCE((SELECT created_at FROM notification_counts WHERE user_id = ?), ?),
+            ?
+          )
+        `, [userId, count || 0, userId, userId, now, now]);
+      }
+    } catch (error) {
+      console.error('Error updating unread messages count:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update new likes count for a user
+   * @param userId The user ID
+   * @param count The new count (or increment if not specified)
+   * @param increment Whether to increment the existing count
+   */
+  async updateNewLikesCount(userId: number, count?: number, increment: boolean = false): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      
+      if (increment) {
+        await this.db.runAsync(`
+          INSERT OR REPLACE INTO notification_counts (
+            user_id, unread_messages_count, new_likes_count, created_at, updated_at
+          ) VALUES (
+            ?, 
+            COALESCE((SELECT unread_messages_count FROM notification_counts WHERE user_id = ?), 0),
+            COALESCE((SELECT new_likes_count FROM notification_counts WHERE user_id = ?), 0) + 1,
+            COALESCE((SELECT created_at FROM notification_counts WHERE user_id = ?), ?),
+            ?
+          )
+        `, [userId, userId, userId, userId, now, now]);
+      } else {
+        await this.db.runAsync(`
+          INSERT OR REPLACE INTO notification_counts (
+            user_id, unread_messages_count, new_likes_count, created_at, updated_at
+          ) VALUES (
+            ?, 
+            COALESCE((SELECT unread_messages_count FROM notification_counts WHERE user_id = ?), 0),
+            ?,
+            COALESCE((SELECT created_at FROM notification_counts WHERE user_id = ?), ?),
+            ?
+          )
+        `, [userId, userId, count || 0, userId, now, now]);
+      }
+    } catch (error) {
+      console.error('Error updating new likes count:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reset all notification counts for a user
+   * @param userId The user ID
+   */
+  async resetNotificationCounts(userId: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT OR REPLACE INTO notification_counts (
+          user_id, unread_messages_count, new_likes_count, created_at, updated_at
+        ) VALUES (?, 0, 0, ?, ?)
+      `, [userId, now, now]);
+    } catch (error) {
+      console.error('Error resetting notification counts:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Force recreate the notification_counts table (for debugging)
+   */
+  async forceRecreateNotificationTable(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      console.log('Force recreating notification_counts table...');
+      
+      // Drop the table if it exists
+      await this.db.execAsync('DROP TABLE IF EXISTS notification_counts');
+      
+      // Recreate the table
+      await this.db.execAsync(`
+        CREATE TABLE notification_counts (
+          id INTEGER PRIMARY KEY,
+          user_id INTEGER,
+          unread_messages_count INTEGER DEFAULT 0,
+          new_likes_count INTEGER DEFAULT 0,
+          created_at TEXT,
+          updated_at TEXT
+        )
+      `);
+      
+      // Create index
+      await this.db.execAsync(`
+        CREATE INDEX idx_notification_counts_user_id ON notification_counts (user_id)
+      `);
+      
+      console.log('Notification_counts table recreated successfully');
+    } catch (error) {
+      console.error('Error recreating notification_counts table:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get chats with optimized query (includes last message)
+   */
+  async getChatsOptimized(): Promise<Chat[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const chats = await this.db.getAllAsync<Chat>(`
+        SELECT 
+          c.*,
+          ou.id as other_user_id,
+          ou.email as other_user_email,
+          ou.phone as other_user_phone,
+          ou.profile_photo_path as other_user_profile_photo_path,
+          ou.last_active_at as other_user_last_active_at,
+          p.first_name as profile_first_name,
+          p.last_name as profile_last_name,
+          p.gender as profile_gender,
+          p.age as profile_age,
+          p.city as profile_city,
+          p.state as profile_state,
+          p.bio as profile_bio,
+          p.interests as profile_interests,
+          p.looking_for as profile_looking_for,
+          pp.medium_url as profile_photo_medium_url,
+          pp.thumbnail_url as profile_photo_thumbnail_url,
+          pp.is_profile_photo as profile_photo_is_profile,
+          m.content as last_message_content,
+          m.message_type as last_message_type,
+          m.sent_at as last_message_sent_at,
+          m.sender_id as last_message_sender_id,
+          m.is_mine as last_message_is_mine
+        FROM chats c
+        LEFT JOIN other_users ou ON c.id = ou.chat_id
+        LEFT JOIN profiles p ON ou.id = p.user_id
+        LEFT JOIN profile_photos pp ON ou.id = pp.user_id AND pp.is_profile_photo = 1
+        LEFT JOIN (
+          SELECT 
+            chat_id, 
+            content, 
+            message_type, 
+            sent_at, 
+            sender_id, 
+            is_mine,
+            ROW_NUMBER() OVER (PARTITION BY chat_id ORDER BY sent_at DESC) as rn
+          FROM messages 
+          WHERE deleted_at IS NULL
+        ) m ON c.id = m.chat_id AND m.rn = 1
+        WHERE c.deleted_at IS NULL
+        ORDER BY c.last_activity_at DESC
+      `);
+
+      return chats.map(chat => this.transformChatFromQuery(chat));
+    } catch (error) {
+      console.error('Error getting optimized chats:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Get messages with optimized pagination
+   */
+  async getMessagesOptimized(chatId: number, limit: number = 20, offset: number = 0): Promise<Message[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const messages = await this.db.getAllAsync<Message>(`
+        SELECT 
+          m.*,
+          ou.email as sender_email
+        FROM messages m
+        LEFT JOIN other_users ou ON m.sender_id = ou.id
+        WHERE m.chat_id = ? AND m.deleted_at IS NULL
+        ORDER BY m.sent_at DESC
+        LIMIT ? OFFSET ?
+      `, [chatId, limit, offset]);
+
+      return messages.map(msg => ({
+        ...msg,
+        is_mine: Boolean(msg.is_mine),
+        is_read: Boolean(msg.is_read),
+        is_edited: Boolean(msg.is_edited)
+      }));
+    } catch (error) {
+      console.error('Error getting optimized messages:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Transform raw query result to Chat object
+   */
+  private transformChatFromQuery(rawChat: any): Chat {
+    return {
+      id: rawChat.id,
+      type: rawChat.type,
+      name: rawChat.name,
+      description: rawChat.description,
+      last_activity_at: rawChat.last_activity_at,
+      is_active: Boolean(rawChat.is_active),
+      created_at: rawChat.created_at,
+      updated_at: rawChat.updated_at,
+      deleted_at: rawChat.deleted_at,
+      unread_count: rawChat.unread_count || 0,
+      other_user: {
+        id: rawChat.other_user_id,
+        email: rawChat.other_user_email,
+        phone: rawChat.other_user_phone,
+        profile_photo_path: rawChat.other_user_profile_photo_path,
+        last_active_at: rawChat.other_user_last_active_at,
+        profile: {
+          first_name: rawChat.profile_first_name,
+          last_name: rawChat.profile_last_name,
+          gender: rawChat.profile_gender,
+          age: rawChat.profile_age,
+          city: rawChat.profile_city,
+          state: rawChat.profile_state,
+          bio: rawChat.profile_bio,
+          interests: rawChat.profile_interests ? JSON.parse(rawChat.profile_interests) : [],
+          looking_for: rawChat.profile_looking_for
+        },
+        profile_photo: rawChat.profile_photo_medium_url ? {
+          medium_url: rawChat.profile_photo_medium_url,
+          thumbnail_url: rawChat.profile_photo_thumbnail_url,
+          is_profile_photo: Boolean(rawChat.profile_photo_is_profile)
+        } : null
+      },
+      last_message: rawChat.last_message_content ? {
+        content: rawChat.last_message_content,
+        message_type: rawChat.last_message_type,
+        sent_at: rawChat.last_message_sent_at,
+        sender_id: rawChat.last_message_sender_id,
+        is_mine: Boolean(rawChat.last_message_is_mine)
+      } : null
+    } as Chat;
+  }
+
+  /**
+   * Optimize database performance
+   */
+  async optimizeDatabase(): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      console.log('Starting database optimization...');
+      
+      // Analyze tables for better query planning
+      await this.db.execAsync('ANALYZE');
+      
+      // Vacuum to reclaim space and optimize storage
+      await this.db.execAsync('VACUUM');
+      
+      // Update statistics for better query optimization
+      await this.db.execAsync('ANALYZE chats');
+      await this.db.execAsync('ANALYZE messages');
+      await this.db.execAsync('ANALYZE other_users');
+      await this.db.execAsync('ANALYZE profiles');
+      await this.db.execAsync('ANALYZE profile_photos');
+      
+      console.log('Database optimization completed');
+    } catch (error) {
+      console.error('Error optimizing database:', error);
+    }
+  }
+
+  /**
+   * Get database statistics for monitoring
+   */
+  async getDatabaseStats(): Promise<{
+    totalChats: number;
+    totalMessages: number;
+    totalUsers: number;
+    totalPhotos: number;
+    avgMessagesPerChat: number;
+    dbSize: number;
+  }> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const stats = await this.db.getFirstAsync<{
+        total_chats: number;
+        total_messages: number;
+        total_users: number;
+        total_photos: number;
+        avg_messages: number;
+      }>(`
+        SELECT 
+          (SELECT COUNT(*) FROM chats WHERE deleted_at IS NULL) as total_chats,
+          (SELECT COUNT(*) FROM messages WHERE deleted_at IS NULL) as total_messages,
+          (SELECT COUNT(*) FROM other_users) as total_users,
+          (SELECT COUNT(*) FROM profile_photos) as total_photos,
+          (SELECT ROUND(AVG(msg_count), 2) FROM (
+            SELECT chat_id, COUNT(*) as msg_count 
+            FROM messages 
+            WHERE deleted_at IS NULL 
+            GROUP BY chat_id
+          )) as avg_messages
+      `);
+
+      return {
+        totalChats: stats?.total_chats || 0,
+        totalMessages: stats?.total_messages || 0,
+        totalUsers: stats?.total_users || 0,
+        totalPhotos: stats?.total_photos || 0,
+        avgMessagesPerChat: stats?.avg_messages || 0,
+        dbSize: 0 // Would need file system access to calculate
+      };
+    } catch (error) {
+      console.error('Error getting database stats:', error);
+      return {
+        totalChats: 0,
+        totalMessages: 0,
+        totalUsers: 0,
+        totalPhotos: 0,
+        avgMessagesPerChat: 0,
+        dbSize: 0
+      };
+    }
+  }
+
+  /**
+   * Clean up old data to maintain performance
+   */
+  async cleanupOldData(daysToKeep: number = 30): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const cutoffDate = new Date();
+      cutoffDate.setDate(cutoffDate.getDate() - daysToKeep);
+      const cutoffString = cutoffDate.toISOString();
+
+      console.log(`Cleaning up data older than ${cutoffString}...`);
+
+      await this.db.withTransactionAsync(async () => {
+        // Soft delete old messages (keep structure, mark as deleted)
+        await this.db!.runAsync(`
+          UPDATE messages 
+          SET deleted_at = datetime('now') 
+          WHERE created_at < ? AND deleted_at IS NULL
+        `, [cutoffString]);
+
+        // Clean up old notification counts
+        await this.db!.runAsync(`
+          DELETE FROM notification_counts 
+          WHERE updated_at < ?
+        `, [cutoffString]);
+
+        console.log('Old data cleanup completed');
+      });
+    } catch (error) {
+      console.error('Error cleaning up old data:', error);
     }
   }
 }

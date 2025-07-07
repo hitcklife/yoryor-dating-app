@@ -49,7 +49,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
   // Show recording preview (after recording, before sending)
   if (recordingState.showVoiceMessage && recordingState.recordedAudio) {
     return (
-      <Box p="$2" bg="#FFFFFF" borderTopWidth={1} borderTopColor="#E5E7EB">
+      <Box p="$0" pb="$1" mt="-$8" bg="#FFFFFF" borderTopWidth={1} borderTopColor="#E5E7EB">
         <HStack alignItems="center" justifyContent="space-between">
           <HStack alignItems="center" space="sm">
             <Pressable onPress={onPlayRecordedAudio}>
@@ -81,7 +81,7 @@ const MessageInput: React.FC<MessageInputProps> = ({
   // Show recording indicator while recording
   if (recordingState.isRecording) {
     return (
-      <Box p="$2" bg="#FFFFFF" borderTopWidth={1} borderTopColor="#E5E7EB">
+      <Box p="$0" pb="$1" mt="-$8" bg="#FFFFFF" borderTopWidth={1} borderTopColor="#E5E7EB">
         <HStack alignItems="center" justifyContent="center" space="sm">
           {/* Stop button on the left */}
           <Pressable onPress={onStopRecording} style={{ marginRight: 16 }}>
@@ -105,6 +105,8 @@ const MessageInput: React.FC<MessageInputProps> = ({
   return (
     <Box
       p="$2"
+      pb="$8"
+      mt="-$2"
       bg="#FFFFFF"
       borderTopWidth={1}
       borderTopColor="#E5E7EB"

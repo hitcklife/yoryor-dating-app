@@ -1,9 +1,10 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useEffect } from "react";
 import { Tabs, useRouter } from 'expo-router';
 import { ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from "@/context/auth-context";
+import sqliteService from "@/services/sqlite-service";
 import {
   Box,
   Text,
@@ -18,8 +19,9 @@ function TabBarIcon(props: {
   name: React.ComponentProps<typeof Ionicons>['name'];
   color: string;
   focused?: boolean;
+  badgeCount?: number;
 }) {
-  if (props.focused) {
+  if (props.focused === true) {
     return (
       <Box
         alignItems="center"
@@ -36,28 +38,81 @@ function TabBarIcon(props: {
       >
         <Ionicons
           size={26}
-          color="white" // White icon
-          name={props.name}
+          color="white"
+          name={typeof props.name === 'string' ? props.name : "home"}
         />
       </Box>
     );
   }
 
   return (
-    <Box alignItems="center" justifyContent="center">
+    <Box alignItems="center" justifyContent="center" position="relative">
       <Ionicons
         size={26}
-        color={props.color}
-        name={props.name}
+        color={typeof props.color === 'string' ? props.color : "#000000"}
+        name={typeof props.name === 'string' ? props.name : "home"}
       />
+      {props.badgeCount && typeof props.badgeCount === 'number' && props.badgeCount > 0 && (
+        <Box
+          position="absolute"
+          top={-5}
+          right={-8}
+          backgroundColor="#FF4444"
+          borderRadius="$full"
+          minWidth={18}
+          height={18}
+          alignItems="center"
+          justifyContent="center"
+          paddingHorizontal={4}
+        >
+          <Text
+            color="white"
+            fontSize={10}
+            fontWeight="$bold"
+            textAlign="center"
+          >
+            {props.badgeCount > 99 ? '99+' : String(props.badgeCount)}
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }
 
 export default function TabLayout() {
-  const { isAuthenticated, isRegistrationCompleted, isLoading } = useAuth();
+  const { isAuthenticated, isRegistrationCompleted, isLoading, getLocalNotificationCounts, user } = useAuth();
   const colorScheme = useColorScheme();
   const router = useRouter();
+  const [notificationCounts, setNotificationCounts] = useState({ unread_messages_count: 0, new_likes_count: 0 });
+
+  // Fetch notification counts from database
+  useEffect(() => {
+    const fetchNotificationCounts = async () => {
+      if (isAuthenticated && isRegistrationCompleted) {
+        try {
+          const counts = await getLocalNotificationCounts();
+          setNotificationCounts(counts);
+          
+          // Add some test data if counts are 0 (for demonstration)
+          if (counts.unread_messages_count === 0 && counts.new_likes_count === 0 && user?.id) {
+            try {
+              await sqliteService.updateUnreadMessagesCount(user.id, 3);
+              await sqliteService.updateNewLikesCount(user.id, 12);
+              // Fetch updated counts
+              const updatedCounts = await getLocalNotificationCounts();
+              setNotificationCounts(updatedCounts);
+            } catch (error) {
+              console.error('Error adding test notification counts:', error);
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching notification counts:', error);
+        }
+      }
+    };
+
+    fetchNotificationCounts();
+  }, [isAuthenticated, isRegistrationCompleted, getLocalNotificationCounts, user?.id]);
 
   useEffect(() => {
     // Only redirect after loading is complete
@@ -128,8 +183,8 @@ export default function TabLayout() {
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon
               name={focused ? "home" : "home-outline"}
-              color={color}
-              focused={focused}
+              color={typeof color === 'string' ? color : "#000000"}
+              focused={focused === true}
             />
           ),
         }}
@@ -143,8 +198,9 @@ export default function TabLayout() {
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon
               name={focused ? "heart" : "heart-outline"}
-              color={color}
-              focused={focused}
+              color={typeof color === 'string' ? color : "#000000"}
+              focused={focused === true}
+              badgeCount={notificationCounts.new_likes_count}
             />
           ),
         }}
@@ -158,8 +214,9 @@ export default function TabLayout() {
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon
               name={focused ? "chatbubbles" : "chatbubbles-outline"}
-              color={color}
-              focused={focused}
+              color={typeof color === 'string' ? color : "#000000"}
+              focused={focused === true}
+              badgeCount={notificationCounts.unread_messages_count}
             />
           ),
         }}
@@ -173,8 +230,8 @@ export default function TabLayout() {
           tabBarIcon: ({ color, focused }) => (
             <TabBarIcon
               name={focused ? "person" : "person-outline"}
-              color={color}
-              focused={focused}
+              color={typeof color === 'string' ? color : "#000000"}
+              focused={focused === true}
             />
           ),
         }}

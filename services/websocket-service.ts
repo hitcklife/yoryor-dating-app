@@ -19,6 +19,14 @@ interface ChatListCallbacks {
   onUnreadCountChanged?: (chatId: number, unreadCount: number) => void;
 }
 
+interface GlobalCallbacks {
+  onNewMatch?: (match: any) => void;
+  onNewLike?: (like: any) => void;
+  onIncomingCall?: (call: any) => void;
+  onGeneralNotification?: (notification: any) => void;
+  onGlobalUnreadCountUpdate?: (count: number) => void;
+}
+
 class WebSocketService {
   private echo: Echo<any> | null = null;
   private pusherClient: Pusher | null = null;
@@ -32,13 +40,26 @@ class WebSocketService {
   private activeChannels: Map<string, any> = new Map();
   private connectionState: 'disconnected' | 'connecting' | 'connected' | 'failed' = 'disconnected';
   private chatListCallbacks: ChatListCallbacks | null = null;
-  private chatListChannel: any = null;
+  private globalCallbacks: GlobalCallbacks | null = null;
+  private globalChannel: any = null;
 
   /**
-   * Set the current user ID
+   * Set global callbacks for app-wide events
+   */
+  setGlobalCallbacks(callbacks: GlobalCallbacks): void {
+    this.globalCallbacks = callbacks;
+  }
+
+  /**
+   * Set the current user ID and auto-initialize if not already connected
    */
   setCurrentUserId(userId: number): void {
     this.currentUserId = userId;
+    
+    // Auto-initialize if not already connected
+    if (!this.initialized && this.connectionState !== 'connecting') {
+      this.initialize();
+    }
   }
 
   /**
@@ -125,6 +146,9 @@ class WebSocketService {
         this.initialized = true;
         this.reconnectAttempts = 0;
 
+        // Subscribe to global private channel immediately after connection
+        this.subscribeToGlobalChannel();
+
         // Call all connection callbacks
         this.connectionCallbacks.forEach(callback => {
           try {
@@ -140,6 +164,7 @@ class WebSocketService {
         this.connectionState = 'disconnected';
         this.initialized = false;
         this.activeChannels.clear();
+        this.globalChannel = null;
         this.attemptReconnect();
       });
 
@@ -206,28 +231,208 @@ class WebSocketService {
   }
 
   /**
-   * Attempt to reconnect to the WebSocket service with exponential backoff
+   * Subscribe to global private channel for app-wide events
    */
-  private attemptReconnect(): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error(`Maximum reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
-      this.connectionState = 'failed';
+  private subscribeToGlobalChannel(): void {
+    if (!this.initialized || !this.echo || !this.currentUserId) {
+      console.warn('WebSocket service not initialized or no user ID available');
       return;
     }
 
-    this.reconnectAttempts++;
+    try {
+      const channelName = `user.${this.currentUserId}`;
+      
+      // Check if already subscribed
+      if (this.globalChannel) {
+        console.log('Already subscribed to global channel');
+        return;
+      }
 
-    // Exponential backoff with jitter
-    const baseDelay = Math.min(2000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
-    const jitter = Math.random() * 1000; // Add randomness to prevent thundering herd
-    const delay = baseDelay + jitter;
-    
-    console.log(`Attempting to reconnect in ${Math.round(delay / 1000)} seconds (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+      this.globalChannel = this.echo.private(channelName);
 
-    this.reconnectTimeout = setTimeout(() => {
-      console.log(`Reconnecting... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-      this.initialize();
-    }, delay);
+      // Listen for new matches
+      this.globalChannel.listen('.NewMatch', (e: any) => {
+        console.log('New match received:', e);
+        try {
+          if (this.globalCallbacks?.onNewMatch) {
+            this.globalCallbacks.onNewMatch(e.match);
+          }
+          
+          // Show notification for new match
+          notificationService.showNotification(
+            'New Match! 💕',
+            `You have a new match with ${e.match?.name || 'someone'}!`,
+            { type: 'match' }
+          );
+        } catch (error) {
+          console.error('Error processing new match:', error);
+        }
+      });
+
+      // Listen for new likes
+      this.globalChannel.listen('.NewLike', (e: any) => {
+        console.log('New like received:', e);
+        try {
+          if (this.globalCallbacks?.onNewLike) {
+            this.globalCallbacks.onNewLike(e.like);
+          }
+          
+          // Show notification for new like
+          notificationService.showNotification(
+            'Someone likes you! 😍',
+            `${e.like?.name || 'Someone'} liked your profile!`,
+            { type: 'like' }
+          );
+        } catch (error) {
+          console.error('Error processing new like:', error);
+        }
+      });
+
+      // Listen for incoming call offers
+      this.globalChannel.listen('.IncomingCall', (e: any) => {
+        console.log('📞 WebSocket: Incoming call received:', e);
+        console.log('📞 WebSocket: Global callbacks available:', !!this.globalCallbacks?.onIncomingCall);
+        try {
+          if (this.globalCallbacks?.onIncomingCall) {
+            console.log('📞 WebSocket: Calling onIncomingCall callback');
+            this.globalCallbacks.onIncomingCall(e.call);
+          } else {
+            console.log('📞 WebSocket: No onIncomingCall callback available');
+          }
+          
+          // Show notification for incoming call
+          notificationService.showNotification(
+            'Incoming Call 📞',
+            `${e.call?.caller_name || 'Someone'} is calling you!`,
+            { type: 'call', priority: 'high' }
+          );
+        } catch (error) {
+          console.error('Error processing incoming call:', error);
+        }
+      });
+
+      // Listen for general notifications
+      this.globalChannel.listen('.GeneralNotification', (e: any) => {
+        console.log('General notification received:', e);
+        try {
+          if (this.globalCallbacks?.onGeneralNotification) {
+            this.globalCallbacks.onGeneralNotification(e.notification);
+          }
+          
+          // Show notification
+          notificationService.showNotification(
+            e.notification?.title || 'New Notification',
+            e.notification?.message || 'You have a new notification',
+            { type: 'general' }
+          );
+        } catch (error) {
+          console.error('Error processing general notification:', error);
+        }
+      });
+
+      // Listen for global unread message count updates
+      this.globalChannel.listen('.GlobalUnreadCountUpdate', (e: any) => {
+        console.log('Global unread count update:', e);
+        try {
+          if (this.globalCallbacks?.onGlobalUnreadCountUpdate) {
+            this.globalCallbacks.onGlobalUnreadCountUpdate(e.count);
+          }
+        } catch (error) {
+          console.error('Error processing global unread count update:', error);
+        }
+      });
+
+      // Listen for new messages across all chats for chat list updates
+      this.globalChannel.listen('.NewMessageInChat', async (e: any) => {
+        console.log('New message in chat list:', e);
+        
+        try {
+          if (e.chat_id && e.message && this.chatListCallbacks?.onNewMessage) {
+            // Get current user ID to determine if message is from current user
+            const currentUserId = await this.getCurrentUserId();
+            
+            if (currentUserId) {
+              const messageWithOwnership = {
+                ...e.message,
+                is_mine: e.message.sender_id === currentUserId
+              };
+
+              // Call the callback to update chat list
+              this.chatListCallbacks.onNewMessage(e.chat_id, messageWithOwnership);
+            }
+          }
+        } catch (error) {
+          console.error('Error processing new message in chat list:', error);
+        }
+      });
+
+      // Listen for chat updates (e.g., when someone joins/leaves)
+      this.globalChannel.listen('.ChatUpdated', (e: any) => {
+        console.log('Chat updated:', e);
+        
+        try {
+          if (e.chat_id && e.chat && this.chatListCallbacks?.onChatUpdated) {
+            this.chatListCallbacks.onChatUpdated(e.chat_id, e.chat);
+          }
+        } catch (error) {
+          console.error('Error processing chat update:', error);
+        }
+      });
+
+      // Listen for unread count changes
+      this.globalChannel.listen('.UnreadCountChanged', (e: any) => {
+        console.log('Unread count changed:', e);
+        
+        try {
+          if (e.chat_id && this.chatListCallbacks?.onUnreadCountChanged) {
+            this.chatListCallbacks.onUnreadCountChanged(e.chat_id, e.unread_count);
+          }
+        } catch (error) {
+          console.error('Error processing unread count change:', error);
+        }
+      });
+
+      console.log(`Subscribed to global channel: ${channelName}`);
+    } catch (error) {
+      console.error('Error subscribing to global channel:', error);
+    }
+  }
+
+  /**
+   * Attempt to reconnect to the WebSocket service with exponential backoff
+   */
+  private attemptReconnect(): void {
+    // Don't attempt to reconnect if no auth token is available
+    AsyncStorage.getItem('auth_token').then(token => {
+      if (!token) {
+        console.log('No auth token available, skipping reconnect attempt');
+        this.connectionState = 'failed';
+        return;
+      }
+
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        console.error(`Maximum reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
+        this.connectionState = 'failed';
+        return;
+      }
+
+      this.reconnectAttempts++;
+
+      // Exponential backoff with jitter
+      const baseDelay = Math.min(2000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+      const jitter = Math.random() * 1000; // Add randomness to prevent thundering herd
+      const delay = baseDelay + jitter;
+      
+      console.log(`Attempting to reconnect in ${Math.round(delay / 1000)} seconds (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+
+      this.reconnectTimeout = setTimeout(() => {
+        console.log(`Reconnecting... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+        this.initialize();
+      }, delay);
+    }).catch(error => {
+      console.error('Error checking auth token for reconnect:', error);
+      this.connectionState = 'failed';
+    });
   }
 
   /**
@@ -486,6 +691,15 @@ class WebSocketService {
    */
   disconnect(): void {
     try {
+      // Clear any pending reconnect timeout
+      if (this.reconnectTimeout) {
+        clearTimeout(this.reconnectTimeout);
+        this.reconnectTimeout = null;
+      }
+
+      // Reset reconnect attempts
+      this.reconnectAttempts = 0;
+
       // Unsubscribe from all active channels
       this.activeChannels.forEach((channel, channelName) => {
         try {
@@ -499,14 +713,14 @@ class WebSocketService {
       // Clear active channels
       this.activeChannels.clear();
 
-      // Unsubscribe from chat list channel
-      if (this.chatListChannel) {
+      // Unsubscribe from global channel
+      if (this.globalChannel) {
         try {
-          this.chatListChannel.unsubscribe();
-          this.chatListChannel = null;
-          console.log('Unsubscribed from chat list channel');
+          this.globalChannel.unsubscribe();
+          this.globalChannel = null;
+          console.log('Unsubscribed from global channel');
         } catch (error) {
-          console.error('Error unsubscribing from chat list channel:', error);
+          console.error('Error unsubscribing from global channel:', error);
         }
       }
 
@@ -521,6 +735,7 @@ class WebSocketService {
       this.initialized = false;
       this.connectionState = 'disconnected';
       this.chatListCallbacks = null;
+      this.currentUserId = null;
 
       console.log('WebSocket service disconnected');
     } catch (error) {
@@ -530,7 +745,7 @@ class WebSocketService {
 
   /**
    * Subscribe to chat list updates for real-time notifications
-   * This allows the chat list to be updated when new messages arrive
+   * This now just stores the callbacks since the global channel already handles the events
    */
   subscribeToChatList(callbacks: ChatListCallbacks): void {
     if (!this.initialized || !this.echo) {
@@ -541,97 +756,19 @@ class WebSocketService {
       return;
     }
 
-    // Store callbacks
+    // Store callbacks - the global channel will handle the events
     this.chatListCallbacks = callbacks;
-
-    try {
-      // Subscribe to user's private channel for chat list updates
-      const currentUserId = this.currentUserId;
-      if (!currentUserId) {
-        console.warn('No current user ID available for chat list subscription');
-        return;
-      }
-
-      const channelName = `user.${currentUserId}`;
-      
-      // Check if already subscribed
-      if (this.chatListChannel) {
-        console.log('Already subscribed to chat list channel');
-        return;
-      }
-
-      this.chatListChannel = this.echo.private(channelName);
-
-      // Listen for new messages across all chats
-      this.chatListChannel.listen('.NewMessageInChat', async (e: any) => {
-        console.log('New message in chat list:', e);
-        
-        try {
-          if (e.chat_id && e.message && this.chatListCallbacks?.onNewMessage) {
-            // Get current user ID to determine if message is from current user
-            const currentUserId = await this.getCurrentUserId();
-            
-            if (currentUserId) {
-              const messageWithOwnership = {
-                ...e.message,
-                is_mine: e.message.sender_id === currentUserId
-              };
-
-              // Call the callback to update chat list
-              this.chatListCallbacks.onNewMessage(e.chat_id, messageWithOwnership);
-            }
-          }
-        } catch (error) {
-          console.error('Error processing new message in chat list:', error);
-        }
-      });
-
-      // Listen for chat updates (e.g., when someone joins/leaves)
-      this.chatListChannel.listen('.ChatUpdated', (e: any) => {
-        console.log('Chat updated:', e);
-        
-        try {
-          if (e.chat_id && e.chat && this.chatListCallbacks?.onChatUpdated) {
-            this.chatListCallbacks.onChatUpdated(e.chat_id, e.chat);
-          }
-        } catch (error) {
-          console.error('Error processing chat update:', error);
-        }
-      });
-
-      // Listen for unread count changes
-      this.chatListChannel.listen('.UnreadCountChanged', (e: any) => {
-        console.log('Unread count changed:', e);
-        
-        try {
-          if (e.chat_id && this.chatListCallbacks?.onUnreadCountChanged) {
-            this.chatListCallbacks.onUnreadCountChanged(e.chat_id, e.unread_count);
-          }
-        } catch (error) {
-          console.error('Error processing unread count change:', error);
-        }
-      });
-
-      console.log(`Subscribed to chat list channel: ${channelName}`);
-    } catch (error) {
-      console.error('Error subscribing to chat list:', error);
-    }
+    
+    console.log('Chat list callbacks registered with global channel');
   }
 
   /**
    * Unsubscribe from chat list updates
    */
   unsubscribeFromChatList(): void {
-    if (this.chatListChannel) {
-      try {
-        this.chatListChannel.unsubscribe();
-        this.chatListChannel = null;
-        this.chatListCallbacks = null;
-        console.log('Unsubscribed from chat list channel');
-      } catch (error) {
-        console.error('Error unsubscribing from chat list channel:', error);
-      }
-    }
+    // Just clear the callbacks since we're using the global channel
+    this.chatListCallbacks = null;
+    console.log('Chat list callbacks cleared');
   }
 }
 

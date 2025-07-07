@@ -33,6 +33,9 @@ export interface PhotoData {
     uri: string;
     isMain: boolean;
     isPrivate: boolean;
+    file?: any;          // File object for upload
+    type?: string;       // File type
+    name?: string;       // File name
 }
 
 export interface RegistrationData {
@@ -46,7 +49,7 @@ export interface RegistrationData {
     occupation: string;
     profession: string;
     bio?: string;
-    interests?: string;
+    interests?: string | string[];
     country: string;
     countryCode: string;
     state?: string;
@@ -56,11 +59,25 @@ export interface RegistrationData {
     photos: PhotoData[];
 }
 
+export interface ProfileData {
+    first_name?: string;
+    last_name?: string;
+    bio?: string;
+    profession?: string;
+    occupation?: string;
+    city?: string;
+    state?: string;
+    gender?: string;
+    looking_for?: string;
+    interests?: string[];
+}
+
 class ApiClient {
     private client!: AxiosInstance;
     private authToken: string | null = null;
     private requestQueue: Array<() => Promise<any>> = [];
     private isRefreshingToken = false;
+    private baseURL: string = 'https://incredibly-evident-hornet.ngrok-free.app';
 
     // Singleton pattern
     private static instance: ApiClient;
@@ -71,13 +88,15 @@ class ApiClient {
         return ApiClient.instance;
     }
 
-    constructor() {
+    constructor(baseURL: string = 'https://incredibly-evident-hornet.ngrok-free.app') {
         if (ApiClient.instance) {
             return ApiClient.instance;
         }
 
+        this.baseURL = baseURL;
+
         this.client = axios.create({
-            baseURL: CONFIG.API_URL,
+            baseURL: this.baseURL,
             timeout: 15000, // 15 seconds
             headers: {
                 'Content-Type': 'application/json',
@@ -101,11 +120,15 @@ class ApiClient {
 
                 if (this.authToken) {
                     config.headers['Authorization'] = `Bearer ${this.authToken}`;
+                    console.log(`Request to ${config.url} with Bearer token: ${this.authToken.substring(0, 20)}...`);
+                } else {
+                    console.log(`Request to ${config.url} without auth token`);
                 }
 
                 return config;
             },
             (error) => {
+                console.error('Request interceptor error:', error);
                 return Promise.reject(error);
             }
         );
@@ -113,10 +136,13 @@ class ApiClient {
         // Set up response interceptor for error handling
         this.client.interceptors.response.use(
             (response) => {
+                console.log(`API Response ${response.status} for ${response.config.url}:`, response.data);
                 // Keep the original response structure for successful requests
                 return response;
             },
             async (error) => {
+                console.error(`API Error ${error.response?.status} for ${error.config?.url}:`, error.response?.data || error.message);
+                
                 // Handle network errors
                 if (!error.response) {
                     throw new Error('Network error. Please check your connection.');
@@ -124,6 +150,7 @@ class ApiClient {
 
                 // Handle expired token
                 if (error.response.status === 401) {
+                    console.log('Received 401, attempting token refresh...');
                     // Try to refresh token
                     try {
                         const refreshed = await this.refreshToken();
@@ -551,85 +578,143 @@ class ApiClient {
             return this.post('/api/v1/auth/authenticate', { phone, otp });
         },
 
-        completeRegistration: async (data: RegistrationData) => {
-            const formData = new FormData();
-
-            // Add user data to form data
-            formData.append('gender', data.gender);
-            formData.append('firstName', data.firstName);
-            formData.append('lastName', data.lastName);
-            formData.append('dateOfBirth', data.dateOfBirth);
-            formData.append('age', data.age);
-            formData.append('email', data.email);
-            formData.append('status', data.status);
-            formData.append('occupation', data.occupation);
-            formData.append('lookingFor', data.lookingFor);
-            formData.append('profession', data.profession);
-
-            if (data.bio) formData.append('bio', data.bio);
-
-            if (data.interests) {
-                const interestsArray = data.interests.split(',');
-                interestsArray.forEach((interest, index) => {
-                    formData.append(`interests[${index}]`, interest.trim());
-                });
-            }
-
-            // Add location data
-            formData.append('country', data.country);
-            formData.append('countryCode', data.countryCode);
-            if (data.state) formData.append('state', data.state);
-            if (data.region) formData.append('region', data.region);
-            formData.append('city', data.city);
-
-            // Find main photo index
-            const mainPhotoIndex = data.photos.findIndex(photo => photo.isMain);
-            if (mainPhotoIndex !== -1) {
-                formData.append('mainPhotoIndex', mainPhotoIndex.toString());
-            }
-
-            // Add photos to form data
-            data.photos.forEach((photo, index) => {
-                if (!photo.uri) {
-                    console.error(`Photo ${index} has invalid URI: ${photo.uri}`);
-                    return;
-                }
-
-                const uriParts = photo.uri.split('/');
-                const fileName = uriParts[uriParts.length - 1] || `photo_${index}.jpg`;
-
-                const fileObject = {
-                    uri: photo.uri,
-                    name: fileName,
-                    type: 'image/jpeg',
-                } as any;
-
-                formData.append(`photos[${index}]`, fileObject);
-                formData.append(`photoMeta[${index}][isMain]`, photo.isMain ? 'true' : 'false');
-                formData.append(`photoMeta[${index}][is_private]`, photo.isPrivate ? 'true' : 'false');
-            });
-
-            return this.post('/api/v1/auth/complete-registration', formData, {
-                headers: {
-                    'Content-Type': 'multipart/form-data',
-                    'Accept': 'application/json',
-                },
-                transformRequest: (data, headers) => data,
-            });
+        checkEmailAvailability: async (email: string) => {
+            return this.post('/api/v1/auth/check-email', { email });
         },
 
-        getHomeStats: async () => {
-            return this.get('/api/v1/home');
+        completeRegistration: async (data: RegistrationData) => {
+            // If there are photos, use multipart/form-data
+            if (data.photos && data.photos.length > 0) {
+                try {
+                    const formData = new FormData();
+                    
+                    // Add all non-photo fields
+                    Object.keys(data).forEach(key => {
+                        if (key !== 'photos' && key !== 'isPrivateProfile') {
+                            const value = (data as any)[key];
+                            
+                            // Send interests as actual array for Laravel validation
+                            if (key === 'interests') {
+                                if (typeof value === 'string') {
+                                    // If it's a JSON string, parse it to array
+                                    try {
+                                        const parsed = JSON.parse(value);
+                                        const interestsArray = Array.isArray(parsed) ? parsed : [];
+                                        interestsArray.forEach((interest, index) => {
+                                            formData.append(`interests[${index}]`, interest);
+                                        });
+                                    } catch {
+                                        // If parsing fails, skip interests
+                                    }
+                                } else if (Array.isArray(value)) {
+                                    value.forEach((interest, index) => {
+                                        formData.append(`interests[${index}]`, interest);
+                                    });
+                                } else {
+                                    // Skip if not array or string
+                                }
+                            } else {
+                                formData.append(key, value);
+                            }
+                        }
+                    });
+                    
+                    // Add profile-level privacy setting
+                    if ((data as any).isPrivateProfile !== undefined) {
+                        formData.append('profile_private', (data as any).isPrivateProfile ? '1' : '0');
+                    }
+                    
+                    // Find main photo and get its index for main_photo_id
+                    let mainPhotoIndex = -1;
+                    data.photos.forEach((photo, index) => {
+                        if (photo.isMain) {
+                            mainPhotoIndex = index;
+                        }
+                    });
+                    
+                    // Add main_photo_id (using index since we don't have persistent IDs yet)
+                    if (mainPhotoIndex >= 0) {
+                        formData.append('main_photo_id', mainPhotoIndex.toString());
+                    }
+                    
+                    // Add photos as files (simple structure)
+                    data.photos.forEach((photo, index) => {
+                        if (photo.file) {
+                            formData.append(`photos[${index}]`, {
+                                uri: photo.file.uri,
+                                name: photo.file.name || `photo_${index + 1}.jpg`,
+                                type: photo.file.type || 'image/jpeg'
+                            } as any);
+                        }
+                    });
+
+                    const response = await this.client.post('/api/v1/auth/complete-registration', formData, {
+                        headers: {
+                            'Content-Type': 'multipart/form-data'
+                        }
+                    });
+
+                    console.log('🔍 Response:', response);
+
+                    return this.transformResponse(response);
+                } catch (error) {
+                    if (axios.isAxiosError(error)) {
+                        return {
+                            status: 'error',
+                            message: error.response?.data?.message || error.message,
+                            data: error.response?.data
+                        };
+                    }
+
+                    return {
+                        status: 'error',
+                        message: 'An unexpected error occurred'
+                    };
+                }
+            } else {
+                // No photos, use regular JSON request
+                // Prepare data for JSON request
+                const jsonData = { ...data };
+                
+                // Handle interests for JSON request - send as actual array
+                if (jsonData.interests) {
+                    if (typeof jsonData.interests === 'string') {
+                        try {
+                            const parsed = JSON.parse(jsonData.interests);
+                            (jsonData as any).interests = Array.isArray(parsed) ? parsed : [];
+                        } catch {
+                            (jsonData as any).interests = [];
+                        }
+                    } else if (Array.isArray(jsonData.interests)) {
+                        // Already an array, keep as is
+                        (jsonData as any).interests = jsonData.interests;
+                    } else {
+                        (jsonData as any).interests = [];
+                    }
+                }
+                
+                // Add profile privacy for JSON request
+                if ((jsonData as any).isPrivateProfile !== undefined) {
+                    (jsonData as any).profile_private = (jsonData as any).isPrivateProfile;
+                    delete (jsonData as any).isPrivateProfile;
+                }
+                
+                return this.post('/api/v1/auth/complete-registration', jsonData);
+            }
         },
 
         logout: async () => {
             try {
                 await this.post('/api/v1/auth/logout');
             } catch (error) {
-                console.error('Error calling logout API:', error);
+                console.warn('Logout API call failed, but continuing with local logout');
             } finally {
                 await this.clearAuthToken();
             }
+        },
+
+        getHomeStats: async () => {
+            return this.get('/api/v1/auth/home-stats');
         },
 
         refresh: async () => {
@@ -643,11 +728,17 @@ class ApiClient {
      */
     public chats = {
         getAll: async (page: number = 1, perPage: number = CONFIG.APP.defaultPageSize) => {
-            return this.get(`/api/v1/chats?page=${page}&per_page=${perPage}`);
+            console.log(`Making API call to get chats: page=${page}, perPage=${perPage}`);
+            const response = await this.get(`/api/v1/chats?page=${page}&per_page=${perPage}`);
+            console.log('Chats API response:', response);
+            return response;
         },
 
         getById: async (chatId: number, page: number = 1, perPage: number = CONFIG.APP.chatMessagesPageSize) => {
-            return this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
+            console.log(`Making API call to get chat ${chatId}: page=${page}, perPage=${perPage}`);
+            const response = await this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
+            console.log(`Chat ${chatId} API response:`, response);
+            return response;
         },
 
         sendMessage: async (chatId: number, data: {
@@ -657,17 +748,26 @@ class ApiClient {
             media_data?: any;
             reply_to_message_id?: number;
         }) => {
-            return this.post(`/api/v1/chats/${chatId}/messages`, data);
+            console.log(`Making API call to send message to chat ${chatId}:`, data);
+            const response = await this.post(`/api/v1/chats/${chatId}/messages`, data);
+            console.log(`Send message response for chat ${chatId}:`, response);
+            return response;
         },
 
         sendVoiceMessage: async (chatId: number, formData: FormData) => {
-            return this.post(`/api/v1/chats/${chatId}/messages`, formData, {
+            console.log(`Making API call to send voice message to chat ${chatId}`);
+            const response = await this.post(`/api/v1/chats/${chatId}/messages`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
             });
+            console.log(`Send voice message response for chat ${chatId}:`, response);
+            return response;
         },
 
         loadMoreMessages: async (chatId: number, page: number, perPage: number = CONFIG.APP.chatMessagesPageSize) => {
-            return this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
+            console.log(`Making API call to load more messages for chat ${chatId}: page=${page}, perPage=${perPage}`);
+            const response = await this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
+            console.log(`Load more messages response for chat ${chatId}:`, response);
+            return response;
         },
     };
 
@@ -744,6 +844,70 @@ class ApiClient {
                 user_id: userId,
                 role: role,
             });
+        },
+    };
+
+    /**
+     * Profile endpoints
+     */
+    public profile = {
+        getMyProfile: async () => {
+            return this.get('/api/v1/profile/me');
+        },
+
+        updateProfile: async (profileId: number, data: ProfileData) => {
+            return this.put(`/api/v1/profile/${profileId}`, data);
+        },
+
+        getCompletionStatus: async () => {
+            return this.get('/api/v1/profile/completion-status');
+        },
+    };
+
+    /**
+     * Photos endpoints
+     */
+    public photos = {
+        getPhotos: async () => {
+            return this.get('/api/v1/photos');
+        },
+
+        uploadPhoto: async (photoData: FormData) => {
+            const url = `${this.baseURL}/api/v1/photos/upload`;
+            const headers: HeadersInit = {};
+            
+            if (this.authToken) {
+                headers['Authorization'] = `Bearer ${this.authToken}`;
+            }
+
+            const response = await fetch(url, {
+                method: 'POST',
+                headers,
+                body: photoData,
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+            }
+
+            return response.json();
+        },
+
+        updatePhoto: async (photoId: number, data: {
+            is_profile_photo?: boolean;
+            order?: number;
+            is_private?: boolean;
+        }) => {
+            return this.put(`/api/v1/photos/${photoId}`, data);
+        },
+
+        deletePhoto: async (photoId: number) => {
+            return this.delete(`/api/v1/photos/${photoId}`);
+        },
+
+        reorderPhotos: async (photoOrders: Array<{ id: number; order: number }>) => {
+            return this.put('/api/v1/photos/reorder', { photo_orders: photoOrders });
         },
     };
 }

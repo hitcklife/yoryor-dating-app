@@ -158,10 +158,8 @@ const ActionButtons = ({
     >
       {/* Render stamps */}
       {renderStamps()}
-      {/* Loading indicator when fetching initial matches */}
-      {isLoading && !hasMatches ? (
-        <ActivityIndicator size="large" color="#FF6B9D" />
-      ) : hasError ? (
+      {/* Show buttons or error state */}
+      {hasError ? (
         <Button onPress={onRetry} bg="#FF6B9D" borderRadius="$xl" px="$6" py="$3">
           <ButtonText color="white">Retry</ButtonText>
         </Button>

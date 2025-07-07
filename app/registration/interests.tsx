@@ -7,7 +7,9 @@ import {
   Heading,
   ScrollView,
   Pressable,
-  SafeAreaView
+  SafeAreaView,
+  Center,
+  AlertCircleIcon
 } from '@gluestack-ui/themed';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Button } from '@/components/ui/button';
@@ -28,6 +30,10 @@ const interestOptions = [
   { id: 'art', label: 'Art', icon: 'color-palette' },
   { id: 'technology', label: 'Technology', icon: 'laptop' },
   { id: 'fitness', label: 'Fitness', icon: 'fitness' },
+  { id: 'nature', label: 'Nature', icon: 'leaf' },
+  { id: 'nightlife', label: 'Nightlife', icon: 'wine' },
+  { id: 'pets', label: 'Pets', icon: 'paw' },
+  { id: 'volunteering', label: 'Volunteering', icon: 'heart' },
 ];
 
 export default function InterestsScreen() {
@@ -41,8 +47,8 @@ export default function InterestsScreen() {
     email: string;
     status: string;
     occupation: string;
-    lookingFor: string;
     profession: string;
+    lookingFor: string;
     bio: string;
   }>();
 
@@ -66,12 +72,18 @@ export default function InterestsScreen() {
       return;
     }
 
+    if (selectedInterests.length > 8) {
+      setError('Please select a maximum of 8 interests');
+      return;
+    }
+
     // Navigate to the next screen with the collected data
+    // Send interests as JSON string to preserve array structure
     router.push({
       pathname: '/registration/photos',
       params: {
         ...params,
-        interests: selectedInterests.join(',')
+        interests: JSON.stringify(selectedInterests) // Send as array via JSON
       }
     });
   };
@@ -90,159 +102,184 @@ export default function InterestsScreen() {
   return (
     <RegistrationLayout
       title="Your Interests"
-      currentStep={8}
-      totalSteps={10}
+      currentStep={5}
+      totalSteps={7}
     >
-      <ScrollView
-        flex={1}
-        contentContainerStyle={{ flexGrow: 1 }}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        <Box flex={1} px="$6" py="$8">
-          <VStack space="lg" alignItems="center">
-            <Heading
-              size="3xl"
-              fontWeight="$bold"
-              textAlign="center"
-              color="$primary700"
-              mb="$2"
-            >
-              What Are Your Interests?
-            </Heading>
+      <SafeAreaView flex={1} bg="$primaryLight50">
+        <Box flex={1}>
+          <ScrollView
+            flex={1}
+            contentContainerStyle={{ flexGrow: 1 }}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            <Box flex={1} px="$6" py="$6">
+              <VStack space="xl" flex={1}>
+                {/* Header */}
+                <Center mb="$6">
+                  <Heading
+                    size="3xl"
+                    fontWeight="$bold"
+                    textAlign="center"
+                    color="$primary700"
+                    mb="$2"
+                  >
+                    What Are Your Interests?
+                  </Heading>
+                  <Text
+                    size="md"
+                    textAlign="center"
+                    color="$textLight600"
+                    maxWidth="$80"
+                  >
+                    Select 1-8 interests that best describe you
+                  </Text>
+                </Center>
 
-            <Text
-              size="lg"
-              textAlign="center"
-              color="$primary600"
-              mb="$6"
-            >
-              Select all that apply
-            </Text>
-
-            {/* Interests Grid - 4 items per row */}
-            <Box width="100%" mb="$6">
-              <VStack space="md">
-                {rows.map((row, rowIndex) => (
-                  <HStack key={rowIndex} justifyContent="space-between" space="sm">
-                    {row.map((option) => {
-                      const isSelected = selectedInterests.includes(option.id);
-                      return (
-                        <Pressable
-                          key={option.id}
-                          onPress={() => toggleInterest(option.id)}
-                          flex={1}
-                          aspectRatio={1}
-                          maxWidth="22%"
-                        >
-                          <Box
+                {/* Interests Grid - 4 items per row */}
+                <VStack space="md">
+                  {rows.map((row, rowIndex) => (
+                    <HStack key={rowIndex} justifyContent="space-between" space="sm">
+                      {row.map((option) => {
+                        const isSelected = selectedInterests.includes(option.id);
+                        return (
+                          <Pressable
+                            key={option.id}
+                            onPress={() => toggleInterest(option.id)}
                             flex={1}
-                            bg={isSelected ? "$primary500" : "$backgroundLight0"}
-                            borderWidth="$2"
-                            borderColor={isSelected ? "$primary500" : "$primary200"}
-                            rounded="$lg"
-                            p="$2"
-                            alignItems="center"
-                            justifyContent="center"
-                            shadowColor="$shadowColor"
-                            shadowOffset={{
-                              width: 0,
-                              height: 2,
-                            }}
-                            shadowOpacity={0.1}
-                            shadowRadius={4}
-                            elevation={3}
+                            aspectRatio={1}
+                            maxWidth="23%"
                           >
-                            <VStack space="xs" alignItems="center" flex={1} justifyContent="center">
-                              <Box
-                                w="$8"
-                                h="$8"
-                                rounded="$full"
-                                bg={isSelected ? "$backgroundLight0" : "$primary700"}
-                                alignItems="center"
-                                justifyContent="center"
-                              >
-                                <Ionicons
-                                  name={option.icon as any}
-                                  size={18}
-                                  color={isSelected ? "#8F3BBF" : "white"}
-                                />
-                              </Box>
-                              <Text
-                                size="xs"
-                                textAlign="center"
-                                color={isSelected ? "$backgroundLight0" : "$primary700"}
-                                fontWeight={isSelected ? "$bold" : "$medium"}
-                                numberOfLines={2}
-                                lineHeight="$xs"
-                              >
-                                {option.label}
-                              </Text>
-                            </VStack>
-                          </Box>
-                        </Pressable>
-                      );
-                    })}
-                    {/* Fill empty spaces in the last row */}
-                    {row.length < 4 &&
-                      Array.from({ length: 4 - row.length }).map((_, emptyIndex) => (
-                        <Box key={`empty-${emptyIndex}`} flex={1} maxWidth="22%" />
-                      ))
-                    }
-                  </HStack>
-                ))}
+                            <Box
+                              flex={1}
+                              bg={isSelected ? "$primary500" : "$backgroundLight0"}
+                              borderWidth="$2"
+                              borderColor={isSelected ? "$primary500" : "$primary200"}
+                              rounded="$xl"
+                              p="$2"
+                              alignItems="center"
+                              justifyContent="center"
+                              shadowColor="$shadowColor"
+                              shadowOffset={{
+                                width: 0,
+                                height: 2,
+                              }}
+                              shadowOpacity={0.1}
+                              shadowRadius={4}
+                              elevation={3}
+                            >
+                              <VStack space="xs" alignItems="center" flex={1} justifyContent="center">
+                                <Box
+                                  w="$8"
+                                  h="$8"
+                                  rounded="$full"
+                                  bg={isSelected ? "$backgroundLight0" : "$primary100"}
+                                  alignItems="center"
+                                  justifyContent="center"
+                                >
+                                  <Ionicons
+                                    name={option.icon as any}
+                                    size={18}
+                                    color={isSelected ? "#8F3BBF" : "#5B1994"}
+                                  />
+                                </Box>
+                                <Text
+                                  size="xs"
+                                  textAlign="center"
+                                  color={isSelected ? "$backgroundLight0" : "$primary700"}
+                                  fontWeight={isSelected ? "$bold" : "$medium"}
+                                  numberOfLines={2}
+                                  lineHeight="$xs"
+                                >
+                                  {option.label}
+                                </Text>
+                              </VStack>
+                            </Box>
+                          </Pressable>
+                        );
+                      })}
+                      {/* Fill empty spaces in the last row */}
+                      {row.length < 4 &&
+                        Array.from({ length: 4 - row.length }).map((_, emptyIndex) => (
+                          <Box key={`empty-${emptyIndex}`} flex={1} maxWidth="23%" />
+                        ))
+                      }
+                    </HStack>
+                  ))}
+                </VStack>
+
+                {/* Selected Count */}
+                {selectedInterests.length > 0 && (
+                  <Box alignItems="center" mb="$2">
+                    <Text
+                      size="sm"
+                      color="$primary600"
+                      textAlign="center"
+                      fontWeight="$medium"
+                    >
+                      {selectedInterests.length} of 8 interests selected
+                    </Text>
+                  </Box>
+                )}
+
+                {/* Error Message */}
+                {error && (
+                  <Box
+                    bg="$error50"
+                    borderColor="$error200"
+                    borderWidth="$1"
+                    borderRadius="$md"
+                    px="$4"
+                    py="$3"
+                    mb="$4"
+                  >
+                    <HStack space="sm" alignItems="center">
+                      <AlertCircleIcon size="sm" color="$error600" />
+                      <Text
+                        size="sm"
+                        color="$error700"
+                        fontWeight="$medium"
+                        flex={1}
+                      >
+                        {error}
+                      </Text>
+                    </HStack>
+                  </Box>
+                )}
+
+                {/* Spacer for scroll content */}
+                <Box h="$20" />
               </VStack>
             </Box>
+          </ScrollView>
 
-            {/* Error Message */}
-            {error && (
-              <Box
-                bg="$error50"
-                borderWidth="$1"
-                borderColor="$error200"
-                rounded="$lg"
-                p="$3"
-                mb="$4"
-                width="100%"
-              >
-                <Text
-                  size="md"
-                  textAlign="center"
-                  color="$error700"
-                  fontWeight="$medium"
-                >
-                  {error}
-                </Text>
-              </Box>
-            )}
-
-            {/* Continue Button */}
-            <Box width="100%" mt="$4">
-              <Button
-                title="Continue"
-                onPress={handleContinue}
-                isDisabled={selectedInterests.length === 0}
-                size="lg"
-                variant="solid"
-              />
-            </Box>
-
-            {/* Selected Count */}
-            {selectedInterests.length > 0 && (
-              <Box mt="$4">
-                <Text
-                  size="sm"
-                  color="$primary600"
-                  textAlign="center"
-                  fontWeight="$medium"
-                >
-                  {selectedInterests.length} interest{selectedInterests.length !== 1 ? 's' : ''} selected
-                </Text>
-              </Box>
-            )}
-          </VStack>
+          {/* Fixed Continue Button */}
+          <Box
+            position="absolute"
+            bottom="$0"
+            left="$0"
+            right="$0"
+            bg="$primaryLight50"
+            px="$6"
+            py="$4"
+            borderTopWidth="$1"
+            borderTopColor="$borderLight200"
+            shadowColor="$shadowColor"
+            shadowOffset={{ width: 0, height: -2 }}
+            shadowOpacity={0.1}
+            shadowRadius={4}
+            elevation={5}
+          >
+            <Button
+              title="Continue"
+              onPress={handleContinue}
+              isDisabled={selectedInterests.length === 0}
+              size="lg"
+              variant="solid"
+            />
+          </Box>
         </Box>
-      </ScrollView>
+      </SafeAreaView>
     </RegistrationLayout>
   );
 }

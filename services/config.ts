@@ -18,7 +18,7 @@ export const CONFIG = {
   },
 
   // Notification Configuration
-  EXPO_PROJECT_ID: 'f0228624-4b64-4543-a64a-7d0c30c19649',
+  EXPO_PROJECT_ID: '85d60026-9ea0-4740-a0ab-23a74ae5b590',
 
   // App Configuration
   APP: {
