@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useEffect } from "react";
 import { Tabs, useRouter } from 'expo-router';
 import { ActivityIndicator } from 'react-native';
@@ -80,31 +80,37 @@ function TabBarIcon(props: {
 }
 
 export default function TabLayout() {
-  const { isAuthenticated, isRegistrationCompleted, isLoading, getLocalNotificationCounts, user } = useAuth();
+  const { isAuthenticated, isRegistrationCompleted, isLoading, getLocalNotificationCounts, user, stats, fetchHomeStats } = useAuth();
   const colorScheme = useColorScheme();
   const router = useRouter();
   const [notificationCounts, setNotificationCounts] = useState({ unread_messages_count: 0, new_likes_count: 0 });
+  const hasInitializedRef = useRef(false);
 
-  // Fetch notification counts from database
+  // Initialize and fetch home stats once when user enters tabs
+  useEffect(() => {
+    const initializeTabs = async () => {
+      if (isAuthenticated && isRegistrationCompleted && !hasInitializedRef.current) {
+        try {
+          console.log('Initializing tabs - fetching home stats once');
+          hasInitializedRef.current = true; // Set this first to prevent multiple calls
+          await fetchHomeStats();
+        } catch (error) {
+          console.error('Error initializing tabs:', error);
+          hasInitializedRef.current = false; // Reset on error to allow retry
+        }
+      }
+    };
+
+    initializeTabs();
+  }, [isAuthenticated, isRegistrationCompleted, fetchHomeStats]);
+
+  // Fetch notification counts from database and also use stats from auth context
   useEffect(() => {
     const fetchNotificationCounts = async () => {
       if (isAuthenticated && isRegistrationCompleted) {
         try {
           const counts = await getLocalNotificationCounts();
           setNotificationCounts(counts);
-          
-          // Add some test data if counts are 0 (for demonstration)
-          if (counts.unread_messages_count === 0 && counts.new_likes_count === 0 && user?.id) {
-            try {
-              await sqliteService.updateUnreadMessagesCount(user.id, 3);
-              await sqliteService.updateNewLikesCount(user.id, 12);
-              // Fetch updated counts
-              const updatedCounts = await getLocalNotificationCounts();
-              setNotificationCounts(updatedCounts);
-            } catch (error) {
-              console.error('Error adding test notification counts:', error);
-            }
-          }
         } catch (error) {
           console.error('Error fetching notification counts:', error);
         }
@@ -113,6 +119,21 @@ export default function TabLayout() {
 
     fetchNotificationCounts();
   }, [isAuthenticated, isRegistrationCompleted, getLocalNotificationCounts, user?.id]);
+
+  // Update notification counts when stats change (from API)
+  useEffect(() => {
+    if (stats) {
+      console.log('Stats received in TabLayout:', stats);
+      setNotificationCounts({
+        unread_messages_count: stats.unread_messages_count,
+        new_likes_count: stats.new_likes_count
+      });
+      console.log('Updated notification counts:', {
+        unread_messages_count: stats.unread_messages_count,
+        new_likes_count: stats.new_likes_count
+      });
+    }
+  }, [stats]);
 
   useEffect(() => {
     // Only redirect after loading is complete
@@ -211,14 +232,17 @@ export default function TabLayout() {
         name="chats"
         options={{
           title: 'Chats',
-          tabBarIcon: ({ color, focused }) => (
-            <TabBarIcon
-              name={focused ? "chatbubbles" : "chatbubbles-outline"}
-              color={typeof color === 'string' ? color : "#000000"}
-              focused={focused === true}
-              badgeCount={notificationCounts.unread_messages_count}
-            />
-          ),
+          tabBarIcon: ({ color, focused }) => {
+            console.log('Chats tab badge count:', notificationCounts.unread_messages_count);
+            return (
+              <TabBarIcon
+                name={focused ? "chatbubbles" : "chatbubbles-outline"}
+                color={typeof color === 'string' ? color : "#000000"}
+                focused={focused === true}
+                badgeCount={notificationCounts.unread_messages_count}
+              />
+            );
+          },
         }}
       />
 

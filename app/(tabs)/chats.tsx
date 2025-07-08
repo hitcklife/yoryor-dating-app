@@ -495,6 +495,7 @@ export default function ChatsScreen() {
         
         // Fetch matches
         await fetchMatches();
+        
       } catch (error) {
         console.error('Error initializing chats:', error);
         setError('Failed to load chats. Please try again.');

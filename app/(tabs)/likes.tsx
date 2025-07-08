@@ -446,8 +446,8 @@ export default function LikesScreen() {
           updated_at: user.updated_at || new Date().toISOString(),
           age: profile.age,
           full_name: `${profile.first_name} ${profile.last_name}`,
-          is_online: user.is_online || false,
-          last_active_at: user.last_active_at || new Date().toISOString(),
+          is_online: false, // Default to false since User interface doesn't have this property
+          last_active_at: user.updated_at || new Date().toISOString(),
         },
         included: [
           {

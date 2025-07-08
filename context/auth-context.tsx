@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiClient, User, RegistrationData } from "../services/api-client";
 import sqliteService from "../services/sqlite-service";
@@ -182,19 +182,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     };
 
-    const fetchHomeStats = async (): Promise<HomeStats | null> => {
+    const fetchHomeStats = useCallback(async (): Promise<HomeStats | null> => {
         try {
+            console.log('fetchHomeStats called');
             const response = await apiClient.auth.getHomeStats();
+            console.log('fetchHomeStats response:', response);
 
             if (response.status === 'success' && response.data?.stats) {
                 const newStats = response.data.stats;
+                console.log('Setting new stats:', newStats);
                 setStats(newStats);
                 
                 // Also update the local SQLite database with these stats
                 if (user?.id) {
                     try {
+                        console.log('Updating SQLite with stats:', newStats);
                         await sqliteService.updateUnreadMessagesCount(user.id, newStats.unread_messages_count);
                         await sqliteService.updateNewLikesCount(user.id, newStats.new_likes_count);
+                        console.log('SQLite updated successfully');
                     } catch (error) {
                         console.error('Error updating local notification counts:', error);
                     }
@@ -203,6 +208,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 return newStats;
             }
 
+            console.log('No stats found in response');
             return null;
         } catch (error) {
             console.error('Error fetching home stats:', error);
@@ -213,7 +219,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
             return null;
         }
-    };
+    }, [user?.id]);
 
     const login = async (token: string, userData: User) => {
         try {
@@ -277,8 +283,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     };
 
-    const refreshProfile = async () => {
+    const refreshProfile = useCallback(async () => {
         try {
+            console.log('refreshProfile called');
             const response = await apiClient.profile.getMyProfile();
 
             if (response.status === 'success' && response.data) {
@@ -313,9 +320,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 await logout();
             }
         }
-    };
+    }, [user?.id]);
 
-    const getLocalNotificationCounts = async (): Promise<{ unread_messages_count: number; new_likes_count: number }> => {
+    const getLocalNotificationCounts = useCallback(async (): Promise<{ unread_messages_count: number; new_likes_count: number }> => {
         try {
             if (!user?.id) {
                 return { unread_messages_count: 0, new_likes_count: 0 };
@@ -326,7 +333,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             console.error('Error getting local notification counts:', error);
             return { unread_messages_count: 0, new_likes_count: 0 };
         }
-    };
+    }, [user?.id]);
 
     const forceRecreateNotificationTable = async (): Promise<void> => {
         try {

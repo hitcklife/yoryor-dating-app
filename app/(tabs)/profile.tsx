@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/context/auth-context";
 import {
@@ -23,11 +23,16 @@ import DebugNotificationCounts from "@/components/DebugNotificationCounts";
 export default function ProfileScreen() {
   const router = useRouter();
   const { logout, user, refreshProfile } = useAuth();
+  const hasRefreshedRef = useRef(false);
 
-  // Refresh profile data when component mounts
+  // Refresh profile data when component mounts - only once
   useEffect(() => {
-    refreshProfile();
-  }, []);
+    if (!hasRefreshedRef.current) {
+      console.log('Profile screen - refreshing profile once');
+      hasRefreshedRef.current = true;
+      refreshProfile();
+    }
+  }, [refreshProfile]);
 
   const handleLogout = async () => {
     try {
