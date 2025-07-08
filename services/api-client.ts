@@ -910,6 +910,28 @@ class ApiClient {
             return this.put('/api/v1/photos/reorder', { photo_orders: photoOrders });
         },
     };
+
+    /**
+     * Preferences endpoints
+     */
+    public preferences = {
+        get: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/preferences');
+        },
+
+        update: async (preferences: any): Promise<ApiResponse<any>> => {
+            return this.put('/api/v1/preferences', preferences);
+        }
+    };
+
+    /**
+     * Countries endpoints
+     */
+    public countries = {
+        getAll: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/countries');
+        }
+    };
 }
 
 // Export singleton instance

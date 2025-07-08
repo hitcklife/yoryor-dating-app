@@ -5,6 +5,7 @@ import { gluestackConfig } from '@/lib/gluestack-theme';
 import { useAuth } from "@/context/auth-context";
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { matchesService, PotentialMatch, getProfileAndPhotos } from '@/services/matches-service';
+import { preferencesService } from '@/services/preferences-service';
 
 // Import custom components
 import Header from '@/components/ui/home/Header';
@@ -38,6 +39,7 @@ export default function TabOneScreen() {
   const [ageRange, setAgeRange] = useState<[number, number]>([18, 35]);
   const [preferredGender, setPreferredGender] = useState('all');
   const [searchGlobal, setSearchGlobal] = useState(true);
+  const [maxDistance, setMaxDistance] = useState(25);
 
   // Animation State
   const [cardPosition, setCardPosition] = useState<Animated.Value | null>(null);
@@ -197,8 +199,27 @@ export default function TabOneScreen() {
       fetchPotentialMatches();
       // Fetch home stats separately to avoid dependency issues
       fetchHomeStats();
+      // Load user preferences
+      loadUserPreferences();
     }
   }, [isAuthenticated, isRegistrationCompleted, fetchPotentialMatches]);
+
+  // Load user preferences
+  const loadUserPreferences = useCallback(async () => {
+    try {
+      const response = await preferencesService.fetchPreferences();
+      if (response?.success && response.data) {
+        const uiPreferences = preferencesService.convertFromApiFormat(response.data);
+        setAgeRange(uiPreferences.ageRange);
+        setPreferredGender(uiPreferences.preferredGender);
+        setSearchGlobal(uiPreferences.searchGlobal);
+        setSelectedCountry(uiPreferences.selectedCountry);
+        setMaxDistance(uiPreferences.maxDistance);
+      }
+    } catch (error) {
+      console.error('Error loading preferences:', error);
+    }
+  }, []);
 
   // Get user's profile photo URL using the utility function
   const profilePhotoUrl = getUserProfilePhotoUrl(user);
@@ -229,17 +250,20 @@ export default function TabOneScreen() {
   };
 
   const closePreferencesModal = () => {
+    console.log('Closing preferences modal');
     setPreferencesModalVisible(false);
+    // Reset any corrupted states
+    if (isNaN(ageRange[0]) || isNaN(ageRange[1])) {
+      setAgeRange([18, 35]);
+    }
+    if (isNaN(maxDistance)) {
+      setMaxDistance(25);
+    }
   };
 
   const savePreferences = () => {
-    // Here you would typically save the preferences to your backend
-    console.log('Saving preferences:', {
-      country: selectedCountry,
-      ageRange,
-      preferredGender,
-      searchGlobal
-    });
+    console.log('Preferences saved, closing modal');
+    // Preferences are now saved in the modal itself
     closePreferencesModal();
   };
 
@@ -352,12 +376,14 @@ export default function TabOneScreen() {
           ageRange={ageRange}
           preferredGender={preferredGender}
           searchGlobal={searchGlobal}
+          maxDistance={maxDistance}
           onClose={closePreferencesModal}
           onSave={savePreferences}
           onCountryChange={setSelectedCountry}
           onAgeRangeChange={setAgeRange}
           onGenderChange={setPreferredGender}
           onSearchGlobalChange={setSearchGlobal}
+          onMaxDistanceChange={setMaxDistance}
         />
 
         {/* Match Modal */}
