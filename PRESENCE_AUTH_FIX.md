@@ -27,17 +27,6 @@ Broadcast::channel('chat.{chatId}', function ($user, $chatId) {
 
 // === PRESENCE CHANNELS ===
 
-// Global online users presence channel
-Broadcast::channel('presence-online-users', function ($user) {
-    // Allow all authenticated users to join global presence
-    return [
-        'id' => $user->id,
-        'name' => $user->profile->first_name . ' ' . $user->profile->last_name,
-        'avatar' => $user->profile_photo_path,
-        'is_online' => true
-    ];
-});
-
 // Chat-specific presence channel
 Broadcast::channel('presence-chat.{chatId}', function ($user, $chatId) {
     // Check if user is part of this chat
@@ -50,23 +39,6 @@ Broadcast::channel('presence-chat.{chatId}', function ($user, $chatId) {
         ];
     }
     return false;
-});
-
-// Dating activity presence channel
-Broadcast::channel('presence-dating-active', function ($user) {
-    // Allow all authenticated users to join dating activity
-    return [
-        'id' => $user->id,
-        'name' => $user->profile->first_name . ' ' . $user->profile->last_name,
-        'avatar' => $user->profile_photo_path,
-        'is_online' => true
-    ];
-});
-
-// User matches presence channel
-Broadcast::channel('presence-user-matches.{userId}', function ($user, $userId) {
-    // Only allow user to see their own matches' presence
-    return (int) $user->id === (int) $userId;
 });
 ```
 

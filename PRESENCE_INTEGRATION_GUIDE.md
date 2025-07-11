@@ -16,10 +16,7 @@ The heartbeat timeout was caused by improper ping/pong handling. Now fixed with:
 ## 🔧 **Presence Features**
 
 ### **Presence Channels:**
-1. **`presence-online-users`** - Global online users
-2. **`presence-chat.{chatId}`** - Users active in specific chats
-3. **`presence-dating-active`** - Users actively browsing for matches
-4. **`presence-user-matches.{userId}`** - Online status of user's matches
+1. **`presence-chat.{chatId}`** - Users active in specific chats
 
 ### **API Integration:**
 - Automatic status updates via `/api/v1/presence/*` endpoints
@@ -44,27 +41,15 @@ await webSocketService.initialize();
 ### **2. Listen to Presence Events**
 
 ```typescript
-// Global online users
-webSocketService.on('presence.users.here', ({ users }) => {
-  console.log('Currently online users:', users);
-  updateOnlineUsersList(users);
+// Chat presence events
+webSocketService.on('presence.chat.user.joined', ({ user, chatId, timestamp }) => {
+  console.log(`${user.name} joined chat ${chatId}`);
+  showUserInChatIndicator(user, chatId);
 });
 
-// User joins/leaves
-webSocketService.on('presence.user.joined', ({ user, timestamp }) => {
-  console.log('User came online:', user.name);
-  showUserOnlineNotification(user);
-});
-
-webSocketService.on('presence.user.left', ({ user, timestamp }) => {
-  console.log('User went offline:', user.name);
-  hideUserOnlineIndicator(user.id);
-});
-
-// Match online status changes
-webSocketService.on('presence.online.status.changed', ({ userId, isOnline }) => {
-  console.log(`Match ${userId} is now ${isOnline ? 'online' : 'offline'}`);
-  updateMatchOnlineStatus(userId, isOnline);
+webSocketService.on('presence.chat.user.left', ({ user, chatId, timestamp }) => {
+  console.log(`${user.name} left chat ${chatId}`);
+  hideUserInChatIndicator(user.id, chatId);
 });
 ```
 
@@ -93,62 +78,6 @@ webSocketService.on('presence.chat.user.left', ({ user, chatId, timestamp }) => 
 ```
 
 ## 🏗️ **React Component Examples**
-
-### **Global Online Users Component**
-
-```typescript
-import React, { useEffect, useState } from 'react';
-import { webSocketService, PresenceUser } from '@/services/websocket-service';
-
-const OnlineUsersComponent = () => {
-  const [onlineUsers, setOnlineUsers] = useState<PresenceUser[]>([]);
-
-  useEffect(() => {
-    // Subscribe to global presence
-    webSocketService.subscribeToGlobalPresence();
-
-    const handleUsersHere = ({ users }: { users: PresenceUser[] }) => {
-      setOnlineUsers(users);
-    };
-
-    const handleUserJoined = ({ user }: { user: PresenceUser }) => {
-      setOnlineUsers(prev => [...prev, user]);
-    };
-
-    const handleUserLeft = ({ user }: { user: PresenceUser }) => {
-      setOnlineUsers(prev => prev.filter(u => u.id !== user.id));
-    };
-
-    // Listen to presence events
-    webSocketService.on('presence.users.here', handleUsersHere);
-    webSocketService.on('presence.user.joined', handleUserJoined);
-    webSocketService.on('presence.user.left', handleUserLeft);
-
-    return () => {
-      // Cleanup
-      webSocketService.off('presence.users.here', handleUsersHere);
-      webSocketService.off('presence.user.joined', handleUserJoined);
-      webSocketService.off('presence.user.left', handleUserLeft);
-      webSocketService.unsubscribeFromPresence('presence-online-users');
-    };
-  }, []);
-
-  return (
-    <div className="online-users">
-      <h3>Online Now ({onlineUsers.length})</h3>
-      {onlineUsers.map(user => (
-        <div key={user.id} className="online-user">
-          <div className="avatar">
-            <img src={user.avatar} alt={user.name} />
-            <span className="online-indicator"></span>
-          </div>
-          <span>{user.name}</span>
-        </div>
-      ))}
-    </div>
-  );
-};
-```
 
 ### **Chat Presence Component**
 
@@ -319,16 +248,6 @@ await webSocketService.updateOnlineStatus(false);
 
 // Send heartbeat to maintain online status
 await webSocketService.sendPresenceHeartbeat();
-```
-
-### **Manage Dating Activity**
-
-```typescript
-// Subscribe when user starts browsing
-webSocketService.subscribeToDatingPresence();
-
-// Unsubscribe when user stops browsing
-webSocketService.unsubscribeFromPresence('presence-dating-active');
 ```
 
 ### **Get Online Users**

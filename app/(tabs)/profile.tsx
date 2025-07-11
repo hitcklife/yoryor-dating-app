@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "expo-router";
 import { useAuth } from "@/context/auth-context";
 import {
@@ -16,6 +16,15 @@ import {
   Badge,
   BadgeText,
   Divider,
+  Modal,
+  ModalBackdrop,
+  ModalContent,
+  ModalHeader,
+  ModalCloseButton,
+  ModalBody,
+  ModalFooter,
+  Button,
+  ButtonText,
 } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
 import DebugNotificationCounts from "@/components/DebugNotificationCounts";
@@ -24,6 +33,7 @@ export default function ProfileScreen() {
   const router = useRouter();
   const { logout, user, refreshProfile } = useAuth();
   const hasRefreshedRef = useRef(false);
+  const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false);
 
   // Refresh profile data when component mounts - only once
   useEffect(() => {
@@ -34,8 +44,13 @@ export default function ProfileScreen() {
     }
   }, [refreshProfile]);
 
-  const handleLogout = async () => {
+  const handleLogoutPress = () => {
+    setShowLogoutConfirmation(true);
+  };
+
+  const handleLogoutConfirm = async () => {
     try {
+      setShowLogoutConfirmation(false);
       // Logout the user
       await logout();
       // Navigate to login screen
@@ -43,6 +58,10 @@ export default function ProfileScreen() {
     } catch (error) {
       console.error("Error logging out:", error);
     }
+  };
+
+  const handleLogoutCancel = () => {
+    setShowLogoutConfirmation(false);
   };
 
   // Get user's profile photo URL - optimized for performance
@@ -81,6 +100,44 @@ export default function ProfileScreen() {
   const interests = user?.profile?.interests || [];
 
   const profilePhotoUrl = getProfilePhotoUrl('medium'); // Use medium for main display and avatars
+
+  // Format location string based on available data
+  const formatLocation = (): string => {
+    const profile = user?.profile;
+    if (!profile) return '';
+
+    const parts = [];
+    
+    // Add age if available
+    if (profile.age) {
+      parts.push(profile.age.toString());
+    } else if (profile.date_of_birth) {
+      parts.push(calculateAge(profile.date_of_birth));
+    }
+    
+    // Add city if available
+    if (profile.city) {
+      parts.push(profile.city);
+    }
+    
+    // Add state if available
+    if (profile.state) {
+      parts.push(profile.state);
+    }
+    
+    // Add country if available (handle both object and string formats)
+    if (profile.country) {
+      if (typeof profile.country === 'object' && profile.country.name) {
+        parts.push(profile.country.name);
+      } else if (typeof profile.country === 'string') {
+        parts.push(profile.country);
+      }
+    }
+    
+    return parts.join(', ');
+  };
+
+  const locationString = formatLocation();
 
   return (
     <SafeAreaView flex={1} backgroundColor="#FDF7FD">
@@ -121,7 +178,7 @@ export default function ProfileScreen() {
             textAlign="center"
             mb="$4"
           >
-            {calculateAge(user?.profile?.date_of_birth)}, {user?.profile?.city}{user?.profile?.state ? `, ${user?.profile?.state}` : ''}
+            {locationString}
           </Text>
 
           <HStack space="md">
@@ -176,16 +233,6 @@ export default function ProfileScreen() {
             elevation={3}
             overflow="hidden"
           >
-            <Text
-              fontSize="$lg"
-              fontWeight="$semibold"
-              color="$primary900"
-              p="$4"
-              pb="$2"
-            >
-              Debug Notification Counts
-            </Text>
-            <DebugNotificationCounts />
           </Box>
 
           {/* Account Settings Section */}
@@ -450,7 +497,7 @@ export default function ProfileScreen() {
 
           {/* Logout Button */}
           <Pressable
-            onPress={handleLogout}
+            onPress={handleLogoutPress}
             bg="$white"
             borderRadius="$xl"
             shadowColor="$backgroundLight300"
@@ -487,6 +534,31 @@ export default function ProfileScreen() {
           </Pressable>
         </VStack>
       </ScrollView>
+
+      <Modal isOpen={showLogoutConfirmation} onClose={handleLogoutCancel}>
+        <ModalBackdrop />
+        <ModalContent>
+          <ModalHeader>
+            <Text fontSize="$lg" fontWeight="$semibold" color="$primary900">
+              Confirm Logout
+            </Text>
+            <ModalCloseButton onPress={handleLogoutCancel} />
+          </ModalHeader>
+          <ModalBody>
+            <Text fontSize="$md" color="$primary700" lineHeight="$lg">
+              Are you sure you want to log out? This action cannot be undone.
+            </Text>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="outline" onPress={handleLogoutCancel} mr="$3">
+              <ButtonText>Cancel</ButtonText>
+            </Button>
+            <Button bg="$error600" onPress={handleLogoutConfirm}>
+              <ButtonText color="$white">Logout</ButtonText>
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
     </SafeAreaView>
   );
 }

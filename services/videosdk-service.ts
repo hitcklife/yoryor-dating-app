@@ -40,7 +40,7 @@ class VideoSDKService {
   private isDestroyed: boolean = false;
 
   constructor() {
-    this.initialize();
+    // Don't initialize automatically - wait for explicit initialization
   }
 
   /**
@@ -67,6 +67,15 @@ class VideoSDKService {
       console.error('Failed to initialize VideoSDK:', error);
       this.initialized = false;
       throw error;
+    }
+  }
+
+  /**
+   * Ensure Video SDK is initialized before use
+   */
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await this.initialize();
     }
   }
 
@@ -105,15 +114,13 @@ class VideoSDKService {
    */
   async createMeeting(): Promise<string> {
     try {
-      if (!this.token) {
-        this.token = await this.getTokenInternal();
-      }
+      await this.ensureInitialized();
 
       // Create meeting using VideoSDK API
       const response = await fetch('https://api.videosdk.live/v2/rooms', {
         method: 'POST',
         headers: {
-          authorization: this.token,
+          authorization: this.token!,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({}),
@@ -141,9 +148,7 @@ class VideoSDKService {
    */
   async createMeetingForChat(chatId: number): Promise<string> {
     try {
-      if (!this.token) {
-        this.token = await this.getTokenInternal();
-      }
+      await this.ensureInitialized();
 
       // Use a deterministic custom room ID based on chat ID
       const customRoomId = `chat-${chatId}-meeting`;
@@ -153,7 +158,7 @@ class VideoSDKService {
       const response = await fetch('https://api.videosdk.live/v2/rooms', {
         method: 'POST',
         headers: {
-          authorization: this.token,
+          authorization: this.token!,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
@@ -192,12 +197,14 @@ class VideoSDKService {
   /**
    * Get meeting configuration for MeetingProvider
    */
-  getMeetingConfig(meetingId: string, participantName: string) {
+  async getMeetingConfig(meetingId: string, participantName: string) {
+    await this.ensureInitialized();
     return {
       meetingId,
       micEnabled: this.isAudioEnabled,
       webcamEnabled: this.isVideoEnabled,
       name: participantName,
+      token: this.token,
     };
   }
 
@@ -205,10 +212,8 @@ class VideoSDKService {
    * Get token for MeetingProvider
    */
   async getToken(): Promise<string> {
-    if (!this.token) {
-      this.token = await this.getTokenInternal();
-    }
-    return this.token;
+    await this.ensureInitialized();
+    return this.token!;
   }
 
   /**

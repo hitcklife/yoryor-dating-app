@@ -1,176 +1,123 @@
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { sqliteService } from "./sqlite-service";
+import { 
+  Chat, 
+  Message, 
+  ChatDetailResponse, 
+  ChatsResponse, 
+  SendMessageResponse, 
+  EditMessageResponse, 
+  DeleteMessageResponse,
+  OtherUser, 
+  Profile, 
+  UserPivot,
+  ProfilePhoto 
+} from '@/types/chat-types';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { apiClient } from './api-client';
+import { sqliteService } from './sqlite-service';
+import { CONFIG } from './config';
 import NetInfo from "@react-native-community/netinfo";
-import { apiClient } from "./api-client";
-import { CONFIG, getAssetUrl } from "@/services/config";
+import { debounce } from 'lodash';
 
-// Types for the chats API response
-export interface ProfilePhoto {
-  id: number;
-  user_id: number;
-  original_url: string;
-  thumbnail_url: string;
-  medium_url: string;
-  is_profile_photo: boolean;
-  order: number;
-  is_private: boolean;
-  is_verified: boolean;
-  status: string;
-  rejection_reason: string | null;
-  metadata: any | null;
-  uploaded_at: string;
-  deleted_at: string | null;
-  created_at: string;
-  updated_at: string;
+// Re-export types for backward compatibility
+export { 
+  Chat, 
+  Message, 
+  ChatDetailResponse, 
+  ChatsResponse, 
+  SendMessageResponse, 
+  EditMessageResponse, 
+  DeleteMessageResponse,
+  OtherUser, 
+  Profile, 
+  UserPivot,
+  ProfilePhoto 
+} from '@/types/chat-types';
+
+// Add MessageBatch type for batch processing
+interface MessageBatch {
+  messages: Message[];
+  oldestMessageId: number;
+  newestMessageId: number;
+  hasMore: boolean;
 }
 
-export interface Profile {
-  id: number;
-  user_id: number;
-  first_name: string;
-  last_name: string;
-  gender: string;
-  date_of_birth: string;
-  age: number;
-  city: string;
-  state: string;
-  province: string | null;
-  country_id: number;
-  latitude: number | null;
-  longitude: number | null;
-  bio: string;
-  interests: string[];
-  looking_for: string;
-  profile_views: number;
-  profile_completed_at: string;
-  status: string | null;
-  occupation: string | null;
-  profession: string | null;
-  country_code: string | null;
-  created_at: string;
-  updated_at: string;
+// Enhanced caching configuration
+interface CacheConfig {
+  chatListTTL: number; // Time to live for chat list cache
+  messagesTTL: number; // Time to live for messages cache
+  maxCachedMessages: number; // Max messages to keep in memory per chat
+  syncInterval: number; // Interval for background sync
 }
 
-export interface UserPivot {
-  chat_id: number;
-  user_id: number;
-  is_muted: boolean;
-  last_read_at: string | null;
-  joined_at: string;
-  left_at: string | null;
-  role: string;
-  created_at: string;
-  updated_at: string;
+const CACHE_CONFIG: CacheConfig = {
+  chatListTTL: 5 * 60 * 1000, // 5 minutes
+  messagesTTL: 10 * 60 * 1000, // 10 minutes
+  maxCachedMessages: 100, // Keep last 100 messages in memory
+  syncInterval: 30 * 1000, // Sync every 30 seconds
+};
+
+// Cache timestamp tracking
+interface CacheTimestamp {
+  chatList?: number;
+  messages: Map<number, number>; // chatId -> timestamp
 }
 
-export interface OtherUser {
-  id: number;
-  email: string;
-  phone: string;
-  google_id: string | null;
-  facebook_id: string | null;
-  email_verified_at: string | null;
-  phone_verified_at: string | null;
-  disabled_at: string | null;
-  registration_completed: boolean;
-  is_admin: boolean;
-  is_private: boolean;
-  profile_photo_path: string | null;
-  last_active_at: string;
-  deleted_at: string | null;
-  created_at: string;
-  updated_at: string;
-  two_factor_enabled: boolean;
-  last_login_at: string;
-  pivot: UserPivot;
-  profile: Profile;
-  profile_photo: ProfilePhoto | null;
+// Helper functions
+export function getProfilePhotoUrl(user: OtherUser | null): string | null {
+  if (!user) return null;
+
+  if (user.profile_photo) {
+    if (user.profile_photo.medium_url) return user.profile_photo.medium_url;
+    if (user.profile_photo.thumbnail_url) return user.profile_photo.thumbnail_url;
+    if (user.profile_photo.original_url) return user.profile_photo.original_url;
+  }
+
+  if (user.profile_photo_path) {
+    if (user.profile_photo_path.startsWith('http')) {
+      return user.profile_photo_path;
+    }
+    return `${CONFIG.API_URL}${user.profile_photo_path}`;
+  }
+
+  return null;
 }
 
-export interface Message {
-  id: number;
-  chat_id: number;
-  sender_id: number;
-  reply_to_message_id: number | null;
-  content: string;
-  message_type: string;
-  media_data: any | null;
-  media_url: string | null;
-  thumbnail_url: string | null;
-  status: string;
-  is_edited: boolean;
-  edited_at: string | null;
-  sent_at: string;
-  deleted_at: string | null;
-  created_at: string;
-  updated_at: string;
-  is_mine?: boolean;
-  is_read?: boolean;
-  read_at?: string | null;
-  sender?: {
-    id: number;
-    email: string;
-  };
+export function getMessageReadStatus(message: Message, currentUserId: number, otherUserId: number): 'sent' | 'delivered' | 'read' {
+  if (!message || !message.is_mine) return 'sent';
+  
+  if (message.is_read || message.read_at) {
+    return 'read';
+  }
+  
+  return 'sent';
 }
 
-export interface Chat {
-  id: number;
-  type: string;
-  name: string | null;
-  description: string | null;
-  last_activity_at: string;
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
-  deleted_at: string | null;
-  unread_count: number;
-  other_user: OtherUser;
-  last_message: Message | null;
-  pivot: UserPivot;
+// Optimized message ownership function with memoization
+const addMessageOwnershipCache = new WeakMap<Message[], Map<number, boolean>>();
+
+export function addMessageOwnership(messages: Message[], currentUserId: number): Message[] {
+  // Check cache first
+  let ownershipCache = addMessageOwnershipCache.get(messages);
+  if (!ownershipCache) {
+    ownershipCache = new Map();
+    addMessageOwnershipCache.set(messages, ownershipCache);
+  }
+
+  return messages.map(message => {
+    const cacheKey = message.id;
+    
+    // Check if we already computed ownership for this message
+    if (ownershipCache!.has(cacheKey)) {
+      return { ...message, is_mine: ownershipCache!.get(cacheKey)! };
+    }
+    
+    const isMine = message.sender_id === currentUserId;
+    ownershipCache!.set(cacheKey, isMine);
+    
+    return { ...message, is_mine: isMine };
+  });
 }
 
-export interface Pagination {
-  total: number;
-  per_page: number;
-  current_page: number;
-  last_page: number;
-}
-
-export interface MessagePagination {
-  total: number;
-  loaded: number;
-  has_more: boolean;
-  current_page: number;
-  last_page: number;
-  per_page: number;
-}
-
-export interface ChatsResponse {
-  status: string;
-  data: {
-    chats: Chat[];
-    pagination: Pagination;
-  };
-}
-
-export interface ChatDetailResponse {
-  status: string;
-  data: {
-    chat: Chat;
-    messages: Message[];
-    pagination: MessagePagination;
-  };
-}
-
-export interface SendMessageResponse {
-  status: string;
-  message: string;
-  data: {
-    message: Message;
-  };
-}
-
-// Helper function to get current user ID
 export async function getCurrentUserId(): Promise<number | null> {
   try {
     const userData = await AsyncStorage.getItem('user_data');
@@ -185,93 +132,97 @@ export async function getCurrentUserId(): Promise<number | null> {
   }
 }
 
-// Helper function to add is_mine property to messages
-export function addMessageOwnership(messages: Message[], currentUserId: number): Message[] {
-  return messages.map(message => ({
-    ...message,
-    is_mine: message.sender_id === currentUserId
-  }));
-}
-
-// Helper function to get profile photo URL
-export function getProfilePhotoUrl(user: OtherUser | null, useHighRes: boolean = false): string | null {
-  if (!user) {
-    return null;
-  }
-
-  // First try to use profile_photo if available
-  if (user.profile_photo) {
-    const photoUrl = useHighRes
-      ? user.profile_photo.original_url
-      : user.profile_photo.thumbnail_url || user.profile_photo.medium_url;
-
-    if (photoUrl) {
-      return getAssetUrl(photoUrl);
-    }
-  }
-
-  // Fallback to profile_photo_path if profile_photo is not available
-  if (user.profile_photo_path) {
-    return getAssetUrl(user.profile_photo_path);
-  }
-
-  return null;
-}
-
-// Helper function to check if a message has been read by a specific user
-export function isMessageReadByUser(message: Message, userId: number): boolean {
-  return message.is_read || false;
-}
-
-// Helper function to get read status for a message (for UI display)
-export function getMessageReadStatus(message: Message, currentUserId: number, otherUserId: number): 'sent' | 'delivered' | 'read' {
-  if (!message.is_mine) {
-    return 'sent'; // For received messages, we don't show read status
-  }
-
-  if (message.is_read) {
-    return 'read';
-  }
-
-  if (message.status === 'sent' || message.status === 'delivered') {
-    return 'delivered';
-  }
-
-  return 'sent';
-}
-
+// Enhanced chat service with optimizations
 class ChatsService {
   private currentUserId: number | null = null;
+  private messageCache = new Map<number, MessageBatch>(); // chatId -> messages
+  private chatCache: Chat[] | null = null;
+  private cacheTimestamps: CacheTimestamp = {
+    messages: new Map()
+  };
+  private syncTimer: any = null;
+  private pendingApiCalls = new Map<string, Promise<any>>(); // Prevent duplicate API calls
+  
+  // Debounced functions for optimization
+  private debouncedSyncChat: (chatId: number) => void;
+  private debouncedSyncChatList: () => void;
 
   constructor() {
     this.initializeCurrentUser();
+    
+    // Initialize debounced functions
+    this.debouncedSyncChat = debounce((chatId: number) => {
+      this.syncChatInBackground(chatId);
+    }, 2000); // 2 second debounce
+    
+    this.debouncedSyncChatList = debounce(() => {
+      this.syncChatListInBackground();
+    }, 5000); // 5 second debounce
+    
+    // Start background sync
+    this.startBackgroundSync();
   }
 
   private async initializeCurrentUser(): Promise<void> {
-    this.currentUserId = await getCurrentUserId();
+    try {
+      const userId = await getCurrentUserId();
+      if (userId) {
+        this.currentUserId = userId;
+      }
+    } catch (error) {
+      console.error('Error initializing current user:', error);
+    }
   }
 
-  async getCurrentUser(): Promise<number | null> {
-    if (!this.currentUserId) {
-      this.currentUserId = await getCurrentUserId();
+  private async getCurrentUser(): Promise<number | null> {
+    if (this.currentUserId) {
+      return this.currentUserId;
+    }
+    
+    const userId = await getCurrentUserId();
+    if (userId) {
+      this.currentUserId = userId;
     }
     return this.currentUserId;
   }
 
-  async getChats(page: number = 1): Promise<ChatsResponse | null> {
+  // Enhanced chat list fetching with intelligent caching
+  async getChats(page: number = 1, forceRefresh: boolean = false): Promise<ChatsResponse | null> {
     try {
       // Ensure we have the current user ID
       await this.initializeCurrentUser();
+      
+      // Check if we can use cached data
+      if (!forceRefresh && this.isChatListCacheValid()) {
+        console.log('Returning cached chat list');
+        return {
+          status: 'success',
+          data: {
+            chats: this.chatCache!,
+            pagination: {
+              total: this.chatCache!.length,
+              per_page: CONFIG.APP.defaultPageSize,
+              current_page: 1,
+              last_page: 1
+            }
+          }
+        };
+      }
       
       const isConnected = await NetInfo.fetch().then((state: any) => state.isConnected);
 
       if (!isConnected) {
         console.log('No internet connection, fetching from SQLite...');
         try {
-          const offlineChats = await sqliteService.getChats();
+          const offlineChats = await sqliteService.getChatsOptimized();
 
           if (offlineChats && offlineChats.length > 0) {
             console.log(`Returning ${offlineChats.length} offline chats`);
+            
+            // Update cache
+            this.chatCache = offlineChats;
+            this.cacheTimestamps.chatList = Date.now();
+            
             return {
               status: 'success',
               data: {
@@ -287,50 +238,53 @@ class ChatsService {
           }
         } catch (sqliteError) {
           console.error('Error fetching offline chats:', sqliteError);
-          // Continue to try API call if offline data fails
         }
+      }
+
+      // Prevent duplicate API calls
+      const cacheKey = `chats-${page}`;
+      if (this.pendingApiCalls.has(cacheKey)) {
+        console.log('Returning pending API call for chat list');
+        return await this.pendingApiCalls.get(cacheKey);
       }
 
       console.log('Making API call to fetch chats...');
-      const response = await apiClient.chats.getAll(page, CONFIG.APP.defaultPageSize);
+      const apiPromise = apiClient.chats.getAll(page, CONFIG.APP.defaultPageSize);
+      this.pendingApiCalls.set(cacheKey, apiPromise);
 
-      console.log('API response status:', response.status);
-      console.log('API response data:', response.data);
+      try {
+        const response = await apiPromise;
+        
+        console.log('API response status:', response.status);
+        console.log('API response data:', response.data);
 
-      if (response.status === 'success' && response.data) {
-        const chatsData = response.data;
-        console.log(`Received ${chatsData.chats?.length || 0} chats from API`);
-
-        // Store chats in SQLite for offline access
-        if (chatsData.chats && chatsData.chats.length > 0) {
-          try {
-            // Check if SQLite service is ready before storing
-            if (sqliteService.isServiceInitialized()) {
-              await sqliteService.storeChats(chatsData.chats);
-              console.log('Chats stored in SQLite successfully');
-            } else {
-              console.log('SQLite service not ready, skipping storage');
-            }
-          } catch (sqliteError) {
-            console.error('Error storing chats in SQLite:', sqliteError);
-            // Don't throw error - API data is still valid
+        if (response.status === 'success' && response.data?.chats) {
+          const chats = response.data.chats;
+          
+          // Update cache
+          if (page === 1) {
+            this.chatCache = chats;
+            this.cacheTimestamps.chatList = Date.now();
           }
+          
+          // Store in SQLite asynchronously
+          this.storeChatListAsync(chats);
+          
+          return response as ChatsResponse;
+        } else {
+          console.error('Invalid API response format:', response);
+          return null;
         }
-
-        return response as ChatsResponse;
+      } finally {
+        this.pendingApiCalls.delete(cacheKey);
       }
-
-      console.log('API response was not successful, returning null');
-      return null;
     } catch (error) {
       console.error('Error fetching chats:', error);
-
-      // Try to get offline data if API call fails
+      
+      // Try to return offline data on error
       try {
-        console.log('API call failed, trying offline data...');
-        const offlineChats = await sqliteService.getChats();
+        const offlineChats = await sqliteService.getChatsOptimized();
         if (offlineChats && offlineChats.length > 0) {
-          console.log(`Returning ${offlineChats.length} offline chats as fallback`);
           return {
             status: 'success',
             data: {
@@ -345,39 +299,19 @@ class ChatsService {
           };
         }
       } catch (sqliteError) {
-        console.error('Error fetching offline chats as fallback:', sqliteError);
-        // Return empty response instead of throwing error
-        return {
-          status: 'success',
-          data: {
-            chats: [],
-            pagination: {
-              total: 0,
-              per_page: CONFIG.APP.defaultPageSize,
-              current_page: 1,
-              last_page: 1
-            }
-          }
-        };
+        console.error('Error fetching offline chats after API error:', sqliteError);
       }
-
-      // If we get here, return empty response
-      return {
-        status: 'success',
-        data: {
-          chats: [],
-          pagination: {
-            total: 0,
-            per_page: CONFIG.APP.defaultPageSize,
-            current_page: 1,
-            last_page: 1
-          }
-        }
-      };
+      
+      throw error;
     }
   }
 
-  async getChatDetails(chatId: number, page: number = 1): Promise<ChatDetailResponse | null> {
+  // Enhanced chat details with cursor-based pagination
+  async getChatDetails(
+    chatId: number, 
+    beforeMessageId?: number, 
+    limit: number = CONFIG.APP.chatMessagesPageSize
+  ): Promise<ChatDetailResponse | null> {
     try {
       const currentUserId = await this.getCurrentUser();
       if (!currentUserId) {
@@ -386,73 +320,71 @@ class ChatsService {
 
       console.log('Getting chat details for chat:', chatId);
 
-      // Always try SQLite first for better performance
-      const offlineChat = await sqliteService.getChatById(chatId);
-      const offlineMessages = await sqliteService.getMessagesByChatId(chatId);
-
-      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
-
-      if (isConnected) {
-        console.log('Making API call for fresh data...');
-        const response = await apiClient.chats.getById(chatId, page, CONFIG.APP.chatMessagesPageSize);
-
-        console.log('API response status:', response.status);
-
-        if (response.status === 'success' && response.data) {
-          const chatData = response.data;
-          
-          console.log('Raw API response data:', chatData);
-          
-          // Extract messages from the nested structure - API returns messages.data
-          const messagesArray = chatData.messages?.data || [];
-          const messagePagination = chatData.messages?.pagination || {
-            total: 0,
-            per_page: 20,
-            current_page: 1,
-            last_page: 1
-          };
-
-          console.log('Extracted messages array:', messagesArray.length);
-          console.log('Message pagination:', messagePagination);
-
-          // Add ownership to messages based on current user ID
-          const messagesWithOwnership = addMessageOwnership(messagesArray, currentUserId);
-
-          console.log('Processed API messages:', messagesWithOwnership.length);
-
-          // Store data in SQLite for offline access
-          if (chatData.chat) {
-            try {
-              await sqliteService.storeChatDetails(chatData.chat, messagesWithOwnership);
-              console.log('Chat details stored in SQLite successfully');
-            } catch (sqliteError) {
-              console.error('Error storing chat details in SQLite:', sqliteError);
-            }
-          }
-
+      // Check memory cache first
+      const cachedBatch = this.messageCache.get(chatId);
+      if (cachedBatch && this.isMessageCacheValid(chatId) && !beforeMessageId) {
+        console.log('Returning cached messages');
+        
+        // Get chat from SQLite
+        const chat = await sqliteService.getChatById(chatId);
+        if (chat) {
           return {
             status: 'success',
             data: {
-              chat: chatData.chat,
-              messages: messagesWithOwnership,
+              chat,
+              messages: cachedBatch.messages.slice(0, limit),
               pagination: {
-                total: messagePagination.total,
-                loaded: messagesWithOwnership.length,
-                has_more: messagePagination.current_page < messagePagination.last_page,
-                current_page: messagePagination.current_page,
-                last_page: messagePagination.last_page,
-                per_page: messagePagination.per_page
+                total: cachedBatch.messages.length,
+                loaded: Math.min(cachedBatch.messages.length, limit),
+                has_more: cachedBatch.hasMore,
+                current_page: 1,
+                last_page: 1,
+                per_page: limit
               }
             }
           };
         }
       }
 
-      // Fallback to offline data if available
-      if (offlineChat && offlineMessages) {
-        console.log('Using offline fallback data');
-        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
+      // Try SQLite first for better performance
+      const offlineChat = await sqliteService.getChatById(chatId);
+      let offlineMessages: Message[] = [];
+      
+      if (beforeMessageId) {
+        offlineMessages = await sqliteService.getMessagesBeforeId(chatId, beforeMessageId, limit);
+      } else {
+        offlineMessages = await sqliteService.getInitialMessagesByChatId(chatId, limit);
+      }
 
+      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
+
+      if (isConnected) {
+        // Prevent duplicate API calls for the same request
+        const cacheKey = `chat-${chatId}-${beforeMessageId || 'initial'}-${limit}`;
+        if (this.pendingApiCalls.has(cacheKey)) {
+          console.log('Returning pending API call for chat details');
+          return await this.pendingApiCalls.get(cacheKey);
+        }
+
+        console.log('Making API call for fresh data...');
+        const apiPromise = this.fetchChatDetailsFromAPI(chatId, beforeMessageId, limit, currentUserId);
+        this.pendingApiCalls.set(cacheKey, apiPromise);
+
+        try {
+          const apiResponse = await apiPromise;
+          if (apiResponse) {
+            return apiResponse;
+          }
+        } finally {
+          this.pendingApiCalls.delete(cacheKey);
+        }
+      }
+
+      // Return offline data if available
+      if (offlineChat && offlineMessages.length > 0) {
+        console.log('Returning offline data');
+        const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
+        
         return {
           status: 'success',
           data: {
@@ -461,54 +393,114 @@ class ChatsService {
             pagination: {
               total: messagesWithOwnership.length,
               loaded: messagesWithOwnership.length,
-              has_more: false,
+              has_more: messagesWithOwnership.length === limit,
               current_page: 1,
               last_page: 1,
-              per_page: messagesWithOwnership.length
+              per_page: limit
             }
           }
         };
       }
 
-      console.log('No data available, returning null');
       return null;
     } catch (error) {
-      console.error('Error fetching chat details:', error);
-
-      // Try to get offline data if API call fails
-      const currentUserId = await this.getCurrentUser();
-      if (currentUserId) {
-        const offlineChat = await sqliteService.getChatById(chatId);
-        const offlineMessages = await sqliteService.getMessagesByChatId(chatId);
-
-        if (offlineChat && offlineMessages) {
-          console.log('Error fallback to offline data');
-          const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
-
-          return {
-            status: 'success',
-            data: {
-              chat: offlineChat,
-              messages: messagesWithOwnership,
-              pagination: {
-                total: messagesWithOwnership.length,
-                loaded: messagesWithOwnership.length,
-                has_more: false,
-                current_page: 1,
-                last_page: 1,
-                per_page: messagesWithOwnership.length
-              }
-            }
-          };
-        }
-      }
-
+      console.error('Error getting chat details:', error);
       throw error;
     }
   }
 
+  // Optimized API call for chat details
+  private async fetchChatDetailsFromAPI(
+    chatId: number, 
+    beforeMessageId: number | undefined,
+    limit: number,
+    currentUserId: number
+  ): Promise<ChatDetailResponse | null> {
+    try {
+      let response;
+      
+      if (beforeMessageId) {
+        // TODO: Use cursor-based pagination when API supports it
+        response = await apiClient.chats.getById(chatId, 1, limit);
+      } else {
+        response = await apiClient.chats.getById(chatId, 1, limit);
+      }
 
-  async sendMessage(chatId: number, content: string, messageType: string = 'text', mediaUrl?: string, mediaData?: any, replyToMessageId?: number): Promise<SendMessageResponse | null> {
+      console.log('API response status:', response.status);
+
+      if (response.status === 'success' && response.data) {
+        const chatData = response.data;
+        
+        console.log('Raw API response data:', chatData);
+        
+        // Extract messages from the nested structure
+        const messagesArray = chatData.messages?.data || [];
+        const messagePagination = chatData.messages?.pagination || {
+          total: 0,
+          per_page: limit,
+          current_page: 1,
+          last_page: 1
+        };
+
+        console.log('Extracted messages array:', messagesArray.length);
+        console.log('Message pagination:', messagePagination);
+
+        // Add ownership to messages
+        const messagesWithOwnership = addMessageOwnership(messagesArray, currentUserId);
+
+        console.log('Processed API messages:', messagesWithOwnership.length);
+
+        // Update memory cache for initial load
+        if (!beforeMessageId && messagesWithOwnership.length > 0) {
+          const batch: MessageBatch = {
+            messages: messagesWithOwnership,
+            oldestMessageId: messagesWithOwnership[messagesWithOwnership.length - 1].id,
+            newestMessageId: messagesWithOwnership[0].id,
+            hasMore: messagePagination.current_page < messagePagination.last_page
+          };
+          
+          this.messageCache.set(chatId, batch);
+          this.cacheTimestamps.messages.set(chatId, Date.now());
+        }
+
+        // Store data in SQLite asynchronously
+        if (chatData.chat) {
+          this.storeChatDetailsAsync(chatData.chat, messagesWithOwnership);
+        }
+
+        return {
+          status: 'success',
+          data: {
+            chat: chatData.chat,
+            messages: messagesWithOwnership,
+            pagination: {
+              total: messagePagination.total,
+              loaded: messagesWithOwnership.length,
+              has_more: messagePagination.current_page < messagePagination.last_page,
+              current_page: messagePagination.current_page,
+              last_page: messagePagination.last_page,
+              per_page: messagePagination.per_page
+            }
+          }
+        };
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error fetching chat details from API:', error);
+      throw error;
+    }
+  }
+
+  // Optimized message sending with immediate UI feedback
+  async sendMessage(
+    chatId: number, 
+    content: string, 
+    messageType: string = 'text', 
+    mediaUrl?: string, 
+    mediaData?: any, 
+    replyToMessageId?: number
+  ): Promise<SendMessageResponse | null> {
     try {
       const token = await AsyncStorage.getItem('auth_token');
       if (!token) {
@@ -520,7 +512,39 @@ class ChatsService {
         throw new Error('Current user ID not found');
       }
 
-      const response = await apiClient.post(`/api/v1/chats/${chatId}/messages`, {
+      // Create optimistic message for immediate UI feedback
+      const optimisticMessage: Message = {
+        id: Date.now(), // Temporary ID
+        chat_id: chatId,
+        sender_id: currentUserId,
+        content,
+        message_type: messageType,
+        media_url: mediaUrl || null,
+        media_data: mediaData || null,
+        reply_to_message_id: replyToMessageId || null,
+        status: 'sending',
+        is_mine: true,
+        is_edited: false,
+        sent_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        is_read: false,
+        read_at: null,
+        edited_at: null,
+        deleted_at: null,
+        thumbnail_url: null,
+        sender: {
+          id: currentUserId,
+          email: '' // Will be filled from actual response
+        },
+        reply_to: null
+      };
+
+      // Update local cache immediately
+      this.addMessageToCache(chatId, optimisticMessage);
+
+      // Make API call
+      const response = await apiClient.chats.sendMessage(chatId, {
         content,
         message_type: messageType,
         media_url: mediaUrl,
@@ -537,8 +561,13 @@ class ChatsService {
           is_mine: message.sender_id === currentUserId
         };
 
-        // Store message in SQLite
-        await sqliteService.saveMessage(messageWithOwnership);
+        // Update cache with real message
+        this.replaceOptimisticMessage(chatId, optimisticMessage.id, messageWithOwnership);
+
+        // Store message in SQLite asynchronously
+        sqliteService.saveMessage(messageWithOwnership).catch(error => {
+          console.error('Error saving message to SQLite:', error);
+        });
 
         return {
           status: response.status,
@@ -549,6 +578,8 @@ class ChatsService {
         };
       }
 
+      // Remove optimistic message on failure
+      this.removeMessageFromCache(chatId, optimisticMessage.id);
       return null;
     } catch (error) {
       console.error('Error sending message:', error);
@@ -556,7 +587,8 @@ class ChatsService {
     }
   }
 
-  async sendVoiceMessage(chatId: number, formData: FormData): Promise<SendMessageResponse | null> {
+  // Send voice message with optimized handling
+  async sendVoiceMessage(chatId: number, audioUri: string, duration: number): Promise<SendMessageResponse | null> {
     try {
       const token = await AsyncStorage.getItem('auth_token');
       if (!token) {
@@ -568,11 +600,22 @@ class ChatsService {
         throw new Error('Current user ID not found');
       }
 
-      const response = await apiClient.post(`/api/v1/chats/${chatId}/messages`, formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        }
-      });
+      // Create form data
+      const formData = new FormData();
+      formData.append('message_type', 'voice');
+      formData.append('media_data', JSON.stringify({ duration }));
+      
+      // Append the audio file
+      const audioFile = {
+        uri: audioUri,
+        type: 'audio/m4a',
+        name: `voice_${Date.now()}.m4a`
+      } as any;
+      
+      formData.append('audio', audioFile);
+
+      // Send to API
+      const response = await apiClient.chats.sendVoiceMessage(chatId, formData);
 
       if (response.status === 'success' && response.data) {
         const message = response.data.message;
@@ -583,8 +626,10 @@ class ChatsService {
           is_mine: message.sender_id === currentUserId
         };
 
-        // Store message in SQLite
-        await sqliteService.saveMessage(messageWithOwnership);
+        // Store message in SQLite asynchronously
+        sqliteService.saveMessage(messageWithOwnership).catch(error => {
+          console.error('Error saving voice message to SQLite:', error);
+        });
 
         return {
           status: response.status,
@@ -602,134 +647,34 @@ class ChatsService {
     }
   }
 
-  async loadMoreMessages(chatId: number, currentPage: number): Promise<{
-    status: string;
-    data: { chat: any; messages: Message[]; pagination: any }
-  }> {
+  // Send file message (images, videos, etc.)
+  async sendFileMessage(chatId: number, formData: FormData): Promise<SendMessageResponse | null> {
     try {
-      const nextPage = currentPage + 1;
-      console.log(`Loading more messages for chat ${chatId}, page ${nextPage}`);
-      
       const currentUserId = await this.getCurrentUser();
       if (!currentUserId) {
         throw new Error('Current user ID not found');
       }
 
-      const isConnected = await NetInfo.fetch().then(state => state.isConnected);
-
-      if (isConnected) {
-        console.log('Making API call for more messages...');
-        const response = await apiClient.chats.getById(chatId, nextPage, CONFIG.APP.chatMessagesPageSize);
-
-        console.log('API response status:', response.status);
-
-        if (response.status === 'success' && response.data) {
-          const chatData = response.data;
-          
-          // Extract messages from the nested structure - API returns messages.data
-          const messagesArray = chatData.messages?.data || [];
-          const messagePagination = chatData.messages?.pagination || {
-            total: 0,
-            per_page: 20,
-            current_page: 1,
-            last_page: 1
-          };
-
-          // Add ownership to messages based on current user ID
-          const messagesWithOwnership = addMessageOwnership(messagesArray, currentUserId);
-
-          console.log('Processed API messages for loadMore:', messagesWithOwnership.length);
-
-          // Store new messages in SQLite for offline access
-          if (messagesWithOwnership.length > 0) {
-            await sqliteService.saveMessages(chatId, messagesWithOwnership);
-          }
-
-          return {
-            status: 'success',
-            data: {
-              chat: chatData.chat,
-              messages: messagesWithOwnership,
-              pagination: {
-                total: messagePagination.total,
-                loaded: messagesWithOwnership.length,
-                has_more: messagePagination.current_page < messagePagination.last_page,
-                current_page: messagePagination.current_page,
-                last_page: messagePagination.last_page,
-                per_page: messagePagination.per_page
-              }
-            }
-          };
-        }
-      }
-
-      // Fallback to SQLite
-      const offlineMessages = await sqliteService.getMessagesByChatId(chatId, CONFIG.APP.chatMessagesPageSize);
-      const messagesWithOwnership = addMessageOwnership(offlineMessages, currentUserId);
-
-      return {
-        status: 'success',
-        data: {
-          chat: null,
-          messages: messagesWithOwnership,
-          pagination: {
-            total: messagesWithOwnership.length,
-            loaded: messagesWithOwnership.length,
-            has_more: false,
-            current_page: 1,
-            last_page: 1,
-            per_page: messagesWithOwnership.length
-          }
-        }
-      };
-    } catch (error) {
-      console.error('Error loading more messages:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Edit a text message
-   * @param chatId The chat ID
-   * @param messageId The message ID to edit
-   * @param newContent The new content for the message
-   * @returns Promise with the updated message
-   */
-  async editMessage(chatId: number, messageId: number, newContent: string): Promise<{
-    status: string;
-    message: string;
-    data: { message: Message };
-  } | null> {
-    try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
-      const currentUserId = await this.getCurrentUser();
-      if (!currentUserId) {
-        throw new Error('Current user ID not found');
-      }
-
-      const response = await apiClient.put(`/api/v1/chats/${chatId}/messages/${messageId}`, {
-        content: newContent
-      });
+      // Send to API using the same endpoint as voice messages
+      const response = await apiClient.chats.sendVoiceMessage(chatId, formData);
 
       if (response.status === 'success' && response.data) {
         const message = response.data.message;
 
-        // Add ownership to the edited message
+        // Add ownership to the sent message
         const messageWithOwnership = {
           ...message,
           is_mine: message.sender_id === currentUserId
         };
 
-        // Update message in SQLite
-        await sqliteService.saveMessage(messageWithOwnership);
+        // Store message in SQLite asynchronously
+        sqliteService.saveMessage(messageWithOwnership).catch(error => {
+          console.error('Error saving file message to SQLite:', error);
+        });
 
         return {
           status: response.status,
-          message: response.message || 'Message edited successfully',
+          message: response.message || '',
           data: {
             message: messageWithOwnership
           }
@@ -738,36 +683,89 @@ class ChatsService {
 
       return null;
     } catch (error) {
+      console.error('Error sending file message:', error);
+      throw error;
+    }
+  }
+
+  // Enhanced message editing with optimistic updates
+  async editMessage(chatId: number, messageId: number, newContent: string): Promise<EditMessageResponse | null> {
+    try {
+      const currentUserId = await this.getCurrentUser();
+      if (!currentUserId) {
+        throw new Error('Current user ID not found');
+      }
+
+      // Update cache optimistically
+      const cachedBatch = this.messageCache.get(chatId);
+      if (cachedBatch) {
+        const messageIndex = cachedBatch.messages.findIndex(m => m.id === messageId);
+        if (messageIndex !== -1) {
+          const oldMessage = cachedBatch.messages[messageIndex];
+          cachedBatch.messages[messageIndex] = {
+            ...oldMessage,
+            content: newContent,
+            is_edited: true,
+            edited_at: new Date().toISOString()
+          };
+        }
+      }
+
+      // Make API call
+      const response = await apiClient.chats.editMessage(chatId, messageId, newContent);
+
+      if (response.status === 'success' && response.data) {
+        const editedMessage = response.data.message;
+
+        // Add ownership
+        const messageWithOwnership = {
+          ...editedMessage,
+          is_mine: editedMessage.sender_id === currentUserId
+        };
+
+        // Update SQLite asynchronously
+        sqliteService.updateMessage(messageWithOwnership).catch((error: any) => {
+          console.error('Error updating message in SQLite:', error);
+        });
+
+        return {
+          status: response.status,
+          message: response.message || '',
+          data: {
+            message: messageWithOwnership
+          }
+        };
+      }
+
+      // Revert optimistic update on failure
+      // TODO: Implement revert logic if needed
+
+      return null;
+    } catch (error) {
       console.error('Error editing message:', error);
       throw error;
     }
   }
 
-  /**
-   * Delete a message
-   * @param chatId The chat ID
-   * @param messageId The message ID to delete
-   * @returns Promise with success status
-   */
-  async deleteMessage(chatId: number, messageId: number): Promise<{
-    status: string;
-    message: string;
-  } | null> {
+  // Delete message with cache cleanup
+  async deleteMessage(chatId: number, messageId: number): Promise<DeleteMessageResponse | null> {
     try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
+      // Remove from cache immediately
+      this.removeMessageFromCache(chatId, messageId);
 
-      const response = await apiClient.delete(`/api/v1/chats/${chatId}/messages/${messageId}`);
+      // Make API call
+      const response = await apiClient.chats.deleteMessage(chatId, messageId);
 
       if (response.status === 'success') {
-        // Mark message as deleted in SQLite (soft delete)
-        await sqliteService.updateMessageStatus(messageId, 'deleted');
+        // Mark as deleted in SQLite asynchronously
+        sqliteService.markMessageAsDeleted(messageId).catch((error: any) => {
+          console.error('Error marking message as deleted in SQLite:', error);
+        });
 
         return {
           status: response.status,
-          message: response.message || 'Message deleted successfully'
+          message: response.message || 'Message deleted successfully',
+          data: response.data
         };
       }
 
@@ -778,14 +776,7 @@ class ChatsService {
     }
   }
 
-  /**
-   * Reply to a message
-   * @param chatId The chat ID
-   * @param content The reply content
-   * @param replyToMessageId The ID of the message being replied to
-   * @param messageType The type of message (default: 'text')
-   * @returns Promise with the sent reply message
-   */
+  // Reply to a message
   async replyToMessage(
     chatId: number, 
     content: string, 
@@ -795,81 +786,256 @@ class ChatsService {
     return this.sendMessage(chatId, content, messageType, undefined, undefined, replyToMessageId);
   }
 
-  /**
-   * Mark messages as read in a specific chat
-   * @param chatId The chat ID
-   * @returns Promise with success status
-   */
-  async markMessagesAsRead(chatId: number): Promise<{
-    status: string;
-    message: string;
-    data: { count: number };
-  } | null> {
+  // Mark messages as read with batch processing
+  async markMessagesAsRead(chatId: number, messageIds: number[]): Promise<void> {
     try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
-      }
-
-      const response = await apiClient.post(`/api/v1/chats/${chatId}/read`);
-
-      if (response.status === 'success') {
-        return {
-          status: response.status,
-          message: response.message || 'Messages marked as read',
-          data: {
-            count: response.data?.count || 0
+      // Update cache immediately for responsive UI
+      const cachedBatch = this.messageCache.get(chatId);
+      if (cachedBatch) {
+        cachedBatch.messages.forEach(msg => {
+          if (messageIds.includes(msg.id) && !msg.is_mine) {
+            msg.is_read = true;
+            msg.read_at = new Date().toISOString();
           }
-        };
+        });
       }
 
-      return null;
+      // Make API call to mark messages as read
+      await apiClient.chats.markMessagesAsRead(chatId, messageIds);
+
+      // Update SQLite
+      await sqliteService.markMessagesAsRead(messageIds);
+      
+      // Update unread count in chat list
+      if (this.chatCache) {
+        const chat = this.chatCache.find(c => c.id === chatId);
+        if (chat) {
+          // Calculate new unread count
+          const readCount = messageIds.length;
+          chat.unread_count = Math.max(0, (chat.unread_count || 0) - readCount);
+        }
+      }
     } catch (error) {
       console.error('Error marking messages as read:', error);
-      throw error;
+      // Don't throw - read receipts are non-critical
     }
   }
 
-  /**
-   * Get unread messages count across all chats
-   * @returns Promise with unread count data
-   */
-  async getUnreadCount(): Promise<{
-    status: string;
-    data: {
-      total_unread: number;
-      chats: Array<{ chat_id: number; unread_count: number }>;
-    };
-  } | null> {
+  // Mark all messages in a chat as read
+  async markChatAsRead(chatId: number): Promise<void> {
     try {
-      const token = await AsyncStorage.getItem('auth_token');
-      if (!token) {
-        throw new Error('No auth token found');
+      // Update chat cache
+      if (this.chatCache) {
+        const chat = this.chatCache.find(c => c.id === chatId);
+        if (chat) {
+          chat.unread_count = 0;
+        }
       }
 
-      const response = await apiClient.get('/api/v1/chats/unread-count');
-
-      if (response.status === 'success') {
-        return {
-          status: response.status,
-          data: response.data
-        };
+      // Update message cache
+      const cachedBatch = this.messageCache.get(chatId);
+      if (cachedBatch) {
+        cachedBatch.messages.forEach(msg => {
+          if (!msg.is_mine && !msg.is_read) {
+            msg.is_read = true;
+            msg.read_at = new Date().toISOString();
+          }
+        });
       }
 
-      return null;
+      // Make API call to mark all as read
+      await apiClient.chats.markMessagesAsRead(chatId);
+
+      // Update SQLite
+      await sqliteService.executeSql(
+        `UPDATE messages SET is_read = 1, read_at = datetime('now') 
+         WHERE chat_id = ? AND is_mine = 0 AND is_read = 0`,
+        [chatId]
+      );
+    } catch (error) {
+      console.error('Error marking chat as read:', error);
+    }
+  }
+
+  // Get unread message count
+  async getUnreadCount(): Promise<number> {
+    try {
+      const chats = await this.getChats(1);
+      if (!chats || chats.status !== 'success') {
+        return 0;
+      }
+
+      return chats.data.chats.reduce((total: number, chat) => total + (chat.unread_count || 0), 0);
     } catch (error) {
       console.error('Error getting unread count:', error);
-      throw error;
+      return 0;
     }
   }
 
-  /**
-   * Update a specific chat with new message data
-   * This is used for real-time updates when new messages arrive
-   */
+  // Cache management methods
+  private isChatListCacheValid(): boolean {
+    if (!this.chatCache || !this.cacheTimestamps.chatList) {
+      return false;
+    }
+    
+    const age = Date.now() - this.cacheTimestamps.chatList;
+    return age < CACHE_CONFIG.chatListTTL;
+  }
+
+  private isMessageCacheValid(chatId: number): boolean {
+    const timestamp = this.cacheTimestamps.messages.get(chatId);
+    if (!timestamp) {
+      return false;
+    }
+    
+    const age = Date.now() - timestamp;
+    return age < CACHE_CONFIG.messagesTTL;
+  }
+
+  private addMessageToCache(chatId: number, message: Message): void {
+    const cachedBatch = this.messageCache.get(chatId);
+    
+    if (cachedBatch) {
+      // Add to beginning (newest first)
+      cachedBatch.messages.unshift(message);
+      cachedBatch.newestMessageId = message.id;
+      
+      // Trim cache if too large
+      if (cachedBatch.messages.length > CACHE_CONFIG.maxCachedMessages) {
+        cachedBatch.messages = cachedBatch.messages.slice(0, CACHE_CONFIG.maxCachedMessages);
+        cachedBatch.hasMore = true;
+      }
+    } else {
+      // Create new batch
+      const batch: MessageBatch = {
+        messages: [message],
+        oldestMessageId: message.id,
+        newestMessageId: message.id,
+        hasMore: false
+      };
+      
+      this.messageCache.set(chatId, batch);
+      this.cacheTimestamps.messages.set(chatId, Date.now());
+    }
+  }
+
+  private replaceOptimisticMessage(chatId: number, tempId: number, realMessage: Message): void {
+    const cachedBatch = this.messageCache.get(chatId);
+    
+    if (cachedBatch) {
+      const index = cachedBatch.messages.findIndex(m => m.id === tempId);
+      if (index !== -1) {
+        cachedBatch.messages[index] = realMessage;
+      }
+    }
+  }
+
+  private removeMessageFromCache(chatId: number, messageId: number): void {
+    const cachedBatch = this.messageCache.get(chatId);
+    
+    if (cachedBatch) {
+      cachedBatch.messages = cachedBatch.messages.filter(m => m.id !== messageId);
+    }
+  }
+
+  // Async storage operations for better performance
+  private async storeChatListAsync(chats: Chat[]): Promise<void> {
+    try {
+      await sqliteService.storeChats(chats);
+      console.log('Chat list stored in SQLite');
+    } catch (error) {
+      console.error('Error storing chat list in SQLite:', error);
+    }
+  }
+
+  private async storeChatDetailsAsync(chat: Chat, messages: Message[]): Promise<void> {
+    try {
+      await sqliteService.storeChatDetails(chat, messages);
+      console.log('Chat details stored in SQLite');
+    } catch (error) {
+      console.error('Error storing chat details in SQLite:', error);
+    }
+  }
+
+  // Background sync methods
+  private startBackgroundSync(): void {
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+    }
+
+    this.syncTimer = setInterval(() => {
+      this.performBackgroundSync();
+    }, CACHE_CONFIG.syncInterval);
+  }
+
+  private async performBackgroundSync(): Promise<void> {
+    const isConnected = await NetInfo.fetch().then(state => state.isConnected);
+    if (!isConnected) {
+      return;
+    }
+
+    // Sync active chats
+    for (const [chatId, batch] of this.messageCache) {
+      if (this.isMessageCacheValid(chatId)) {
+        continue; // Skip if cache is still fresh
+      }
+      
+      this.debouncedSyncChat(chatId);
+    }
+
+    // Sync chat list if needed
+    if (!this.isChatListCacheValid()) {
+      this.debouncedSyncChatList();
+    }
+  }
+
+  private async syncChatInBackground(chatId: number): Promise<void> {
+    try {
+      console.log(`Background sync for chat ${chatId}`);
+      await this.getChatDetails(chatId, undefined, CONFIG.APP.chatMessagesPageSize);
+    } catch (error) {
+      console.error(`Error syncing chat ${chatId}:`, error);
+    }
+  }
+
+  private async syncChatListInBackground(): Promise<void> {
+    try {
+      console.log('Background sync for chat list');
+      await this.getChats(1);
+    } catch (error) {
+      console.error('Error syncing chat list:', error);
+    }
+  }
+
+  // Update methods for real-time events
   async updateChatWithNewMessage(chatId: number, newMessage: Message): Promise<void> {
     try {
-      // Update the chat's last message in SQLite
+      // Update memory cache
+      this.addMessageToCache(chatId, newMessage);
+      
+      // Update chat list cache
+      if (this.chatCache) {
+        const chatIndex = this.chatCache.findIndex(c => c.id === chatId);
+        if (chatIndex !== -1) {
+          this.chatCache[chatIndex].last_message = newMessage;
+          this.chatCache[chatIndex].last_activity_at = newMessage.created_at;
+          
+          // Update unread count if message is not from current user
+          const currentUserId = await this.getCurrentUser();
+          if (currentUserId && newMessage.sender_id !== currentUserId) {
+            this.chatCache[chatIndex].unread_count = (this.chatCache[chatIndex].unread_count || 0) + 1;
+          }
+          
+          // Re-sort chats by last activity
+          this.chatCache.sort((a, b) => {
+            const timeA = new Date(a.last_activity_at).getTime();
+            const timeB = new Date(b.last_activity_at).getTime();
+            return timeB - timeA;
+          });
+        }
+      }
+      
+      // Update SQLite
       await sqliteService.updateChatLastMessage(chatId, newMessage);
       
       // Update unread count if message is not from current user
@@ -882,41 +1048,92 @@ class ChatsService {
     }
   }
 
-  /**
-   * Mark messages as read for a specific chat
-   */
-  async markChatAsRead(chatId: number): Promise<any> {
+  async updateMessageWithEdit(editedMessage: Message): Promise<void> {
     try {
-      const response = await apiClient.post(`/api/v1/chats/${chatId}/read`);
-      return response;
-    } catch (error) {
-      console.error('Error marking chat as read:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get a single chat with its latest message
-   */
-  async getChatWithLatestMessage(chatId: number): Promise<Chat | null> {
-    try {
-      const chat = await sqliteService.getChatById(chatId);
-      if (chat) {
-        // Get the latest message for this chat
-        const latestMessage = await sqliteService.getLastMessageForChat(chatId);
-        if (latestMessage) {
-          chat.last_message = latestMessage;
+      // Update memory cache
+      const cachedBatch = this.messageCache.get(editedMessage.chat_id);
+      if (cachedBatch) {
+        const messageIndex = cachedBatch.messages.findIndex(m => m.id === editedMessage.id);
+        if (messageIndex !== -1) {
+          cachedBatch.messages[messageIndex] = editedMessage;
         }
       }
-      return chat;
+      
+      // Update SQLite
+      await sqliteService.updateMessage(editedMessage);
     } catch (error) {
-      console.error('Error getting chat with latest message:', error);
-      return null;
+      console.error('Error updating message with edit:', error);
     }
   }
 
+  async updateMessageWithDelete(messageId: number): Promise<void> {
+    try {
+      // Remove from all caches
+      for (const [chatId, batch] of this.messageCache) {
+        const index = batch.messages.findIndex(m => m.id === messageId);
+        if (index !== -1) {
+          batch.messages.splice(index, 1);
+          break;
+        }
+      }
+      
+      // Mark as deleted in SQLite
+      await sqliteService.markMessageAsDeleted(messageId);
+    } catch (error) {
+      console.error('Error updating message with delete:', error);
+    }
+  }
+
+  async updateChatListWithMessageEdit(editedMessage: Message): Promise<void> {
+    try {
+      if (this.chatCache) {
+        const chat = this.chatCache.find(c => c.id === editedMessage.chat_id);
+        if (chat && chat.last_message && chat.last_message.id === editedMessage.id) {
+          chat.last_message = editedMessage;
+        }
+      }
+    } catch (error) {
+      console.error('Error updating chat list with message edit:', error);
+    }
+  }
+
+  async updateChatListWithMessageDelete(chatId: number, messageId: number): Promise<void> {
+    try {
+      if (this.chatCache) {
+        const chat = this.chatCache.find(c => c.id === chatId);
+        if (chat && chat.last_message && chat.last_message.id === messageId) {
+          // Fetch the previous message to update last_message
+          const messages = await sqliteService.getInitialMessagesByChatId(chatId, 1);
+          if (messages.length > 0) {
+            chat.last_message = messages[0];
+          } else {
+            chat.last_message = null;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error updating chat list with message delete:', error);
+    }
+  }
+
+  // Cleanup method
+  cleanup(): void {
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = null;
+    }
+    
+    // Clear caches
+    this.messageCache.clear();
+    this.chatCache = null;
+    this.cacheTimestamps = {
+      messages: new Map()
+    };
+    this.pendingApiCalls.clear();
+  }
 }
 
+// Create singleton instance
 export const chatsService = new ChatsService();
 
 // Initialize the service

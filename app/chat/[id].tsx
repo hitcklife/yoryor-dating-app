@@ -81,6 +81,7 @@ export default function ChatScreen() {
   const [isTyping, setIsTyping] = useState(false);
   const [typingUser, setTypingUser] = useState<string | null>(null);
   const [lastTypingTime, setLastTypingTime] = useState(0);
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Chat and call states
   const [chatChannel, setChatChannel] = useState<any>(null);
@@ -110,6 +111,9 @@ export default function ChatScreen() {
     currentMessageId: null as number | null
   });
 
+  // Audio initialization state
+  const [audioInitialized, setAudioInitialized] = useState(false);
+
   // Scroll state management
   const [scrollState, setScrollState] = useState({
     offset: 0,
@@ -134,6 +138,12 @@ export default function ChatScreen() {
   } | null>(null);
   const [showFilePreview, setShowFilePreview] = useState(false);
 
+  const [showActionSheet, setShowActionSheet] = useState(false);
+  const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
+  const [isOtherUserOnline, setIsOtherUserOnline] = useState(false);
+
+  // REFS
+  const callManagerRef = useRef<any>(null);
 
 
   // Merge messages by ID, preserving local data when API data is same
@@ -287,6 +297,30 @@ export default function ChatScreen() {
     return () => {
       console.log('Chat component cleanup');
       isMounted.current = false;
+      
+      // Clear typing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+        typingTimeoutRef.current = null;
+      }
+      
+      // Clear recording timer
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      
+      // Cleanup audio resources
+      try {
+        if (audioRecorder) {
+          audioRecorder.stop();
+        }
+        if (player) {
+          player.pause();
+        }
+      } catch (error) {
+        console.warn('Error cleaning up audio resources:', error);
+      }
     };
   }, [chatId, mergeMessagesByID]);
 
@@ -295,38 +329,276 @@ export default function ChatScreen() {
     chatRef.current = chat;
   }, [chat]);
 
+  // WebSocket event listeners for real-time updates
+  useEffect(() => {
+    if (!chatId) {
+      console.log('No chat ID provided for WebSocket listeners');
+      return;
+    }
+    
+    console.log('WebSocket service state check:');
+    console.log('- isConnected:', webSocketService.isConnected());
+    console.log('- connectionState:', webSocketService.getConnectionState());
+    
+    if (!webSocketService.isConnected()) {
+      console.log('WebSocket not connected, cannot set up event listeners');
+      console.log('This might be because:');
+      console.log('1. WebSocket service not initialized');
+      console.log('2. User not authenticated');
+      console.log('3. Connection failed');
+      
+      // Try to reconnect after a short delay
+      setTimeout(() => {
+        if (webSocketService.isConnected()) {
+          console.log('WebSocket connected after retry, setting up listeners');
+          // Re-run this effect
+          return;
+        } else {
+          console.log('WebSocket still not connected after retry');
+        }
+      }, 2000);
+      
+      return;
+    }
+
+    console.log('Setting up WebSocket event listeners for chat:', chatId);
+    console.log('WebSocket connection state:', webSocketService.getConnectionState());
+    console.log('WebSocket is connected:', webSocketService.isConnected());
+
+    // Subscribe to chat channel
+    const chatChannel = webSocketService.subscribeToChat(chatId);
+    console.log('Chat channel subscribed:', !!chatChannel);
+
+    // Handle new messages
+    const handleNewMessage = (message: any) => {
+      if (!isMounted.current) return;
+      
+      console.log('New message received:', message);
+      
+      // Add new message to the list
+      setMessages(prevMessages => {
+        const newMessages = mergeMessagesByID(prevMessages, [message]);
+        
+        // Scroll to bottom with animation after adding new message
+        setTimeout(() => {
+          if (isMounted.current && flatListRef.current) {
+            flatListRef.current.scrollToOffset({ offset: 0, animated: true });
+          }
+        }, 50);
+        
+        return newMessages;
+      });
+    };
+
+    // Handle typing indicators
+    const handleTypingIndicator = async (data: any) => {
+      if (!isMounted.current) return;
+      
+      console.log('Typing indicator received:', data);
+      
+      // Show typing indicator for other users only
+      const currentUserId = await getCurrentUserId();
+      if (data.user_id && data.user_id !== currentUserId) {
+        setTypingUser(data.user_name || `User ${data.user_id}`);
+        setIsTyping(true);
+        
+        // Hide typing indicator after 3 seconds
+        setTimeout(() => {
+          if (isMounted.current) {
+            setIsTyping(false);
+            setTypingUser(null);
+          }
+        }, 3000);
+      }
+    };
+
+    // Handle read receipts
+    const handleReadReceipt = (data: any) => {
+      if (!isMounted.current) return;
+      
+      console.log('Read receipt received:', data);
+      
+      // Update message read status if needed
+      if (data.message_id) {
+        setMessages(prevMessages =>
+          prevMessages.map(msg =>
+            msg.id === data.message_id ? { ...msg, read_at: data.read_at } : msg
+          )
+        );
+      }
+    };
+
+    // Handle message edited events
+    const handleMessageEdited = async (editedMessage: any) => {
+      if (!isMounted.current) return;
+      
+      console.log('Message edited received:', editedMessage);
+      console.log('Current messages before edit:', messages.map(m => ({ id: m.id, content: m.content, is_edited: m.is_edited })));
+      
+      // Update the message in the local database
+      try {
+        await chatsService.updateMessageWithEdit(editedMessage);
+        // Also update the chat list to reflect the edited message
+        await chatsService.updateChatListWithMessageEdit(editedMessage);
+      } catch (error) {
+        console.error('Error updating message in database:', error);
+      }
+      
+      // Update the message in the list
+      setMessages(prevMessages => {
+        const updatedMessages = prevMessages.map(msg =>
+          msg.id === editedMessage.id ? { ...msg, ...editedMessage } : msg
+        );
+        console.log('Messages after edit:', updatedMessages.map(m => ({ id: m.id, content: m.content, is_edited: m.is_edited })));
+        return updatedMessages;
+      });
+    };
+
+    // Handle message deleted events
+    const handleMessageDeleted = async (data: any) => {
+      if (!isMounted.current) return;
+      
+      console.log('Message deleted received:', data);
+      console.log('Current messages before delete:', messages.map(m => ({ id: m.id, content: m.content })));
+      
+      // Remove the message from the list
+      setMessages(prevMessages => {
+        const filteredMessages = prevMessages.filter(msg => msg.id !== data.messageId);
+        console.log('Messages after delete:', filteredMessages.map(m => ({ id: m.id, content: m.content })));
+        return filteredMessages;
+      });
+      
+      // Update the message in the local database (mark as deleted)
+      try {
+        await chatsService.updateMessageWithDelete(data.messageId);
+        // Also update the chat list to reflect the deleted message
+        await chatsService.updateChatListWithMessageDelete(chatId, data.messageId);
+      } catch (error) {
+        console.error('Error updating message in database:', error);
+      }
+    };
+
+    // Listen to WebSocket events
+    webSocketService.on('chat.message.new', handleNewMessage);
+    webSocketService.on('chat.message.edited', handleMessageEdited);
+    webSocketService.on('chat.message.deleted', handleMessageDeleted);
+    webSocketService.on('chat.typing', handleTypingIndicator);
+    webSocketService.on('chat.message.read', handleReadReceipt);
+
+    // Cleanup function
+    return () => {
+      console.log('Cleaning up WebSocket event listeners for chat:', chatId);
+      webSocketService.off('chat.message.new', handleNewMessage);
+      webSocketService.off('chat.message.edited', handleMessageEdited);
+      webSocketService.off('chat.message.deleted', handleMessageDeleted);
+      webSocketService.off('chat.typing', handleTypingIndicator);
+      webSocketService.off('chat.message.read', handleReadReceipt);
+      
+      // Stop typing indicator when leaving chat
+      stopTypingIndicator();
+      
+      // Clear typing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      
+      if (chatChannel) {
+        webSocketService.unsubscribeFromChat(chatId);
+      }
+    };
+  }, [chatId, mergeMessagesByID]);
+
+  // Auto-mark messages as read when viewing chat
+  useEffect(() => {
+    if (!chat || !messages.length) return;
+
+    // Get unread messages from other user
+    const unreadMessageIds = messages
+      .filter(msg => !msg.is_mine && !msg.is_read)
+      .map(msg => msg.id);
+
+    if (unreadMessageIds.length > 0) {
+      // Mark messages as read after a short delay
+      const timer = setTimeout(() => {
+        chatsService.markMessagesAsRead(chatId, unreadMessageIds).catch(error => {
+          console.error('Error marking messages as read:', error);
+        });
+      }, 1000); // 1 second delay to ensure user actually viewed them
+
+      return () => clearTimeout(timer);
+    }
+  }, [chatId, messages]);
+
+  // Subscribe to presence for online status
+  useEffect(() => {
+    if (!chat) return;
+
+    // Subscribe to chat presence channel
+    webSocketService.subscribeToChatPresence(chatId);
+
+    // Listen for presence events
+    const handleUserJoined = (event: any) => {
+      if (event.chatId === chatId && event.user.id === chat.other_user.id) {
+        // Other user came online
+        setIsOtherUserOnline(true);
+      }
+    };
+
+    const handleUserLeft = (event: any) => {
+      if (event.chatId === chatId && event.user.id === chat.other_user.id) {
+        // Other user went offline
+        setIsOtherUserOnline(false);
+      }
+    };
+
+    webSocketService.on('presence.chat.user.joined', handleUserJoined);
+    webSocketService.on('presence.chat.user.left', handleUserLeft);
+
+    // Check initial online status
+    webSocketService.getOnlineUsersInChat(chatId).then(users => {
+      const isOnline = users.some(user => user.id === chat.other_user.id);
+      setIsOtherUserOnline(isOnline);
+    });
+
+    return () => {
+      webSocketService.off('presence.chat.user.joined', handleUserJoined);
+      webSocketService.off('presence.chat.user.left', handleUserLeft);
+      webSocketService.unsubscribeFromChatPresence(chatId);
+    };
+  }, [chatId, chat]);
+
   // ---- Message Action Handlers ----
 
-  // Handle edit message
-  const handleEditMessage = useCallback((messageToEdit: Message) => {
-    if (!messageToEdit.is_mine || messageToEdit.message_type !== 'text') return;
-    setEditingMessage(messageToEdit);
-    setEditText(messageToEdit.content);
-  }, []);
-
-  // Handle delete message
-  const handleDeleteMessage = useCallback(async (messageId: number) => {
+  const handleEditMessage = async (message: Message) => {
     try {
+      // Extract needed info from message
+      const messageId = message.id;
+      const content = message.content;
+      
+      // Start editing
+      setEditingMessage(message);
+      setEditText(content);
+    } catch (error) {
+      console.error('Error starting message edit:', error);
+    }
+  };
+
+  const handleDeleteMessage = async (messageId: number) => {
+    try {
+      // Make sure we have chatId
       if (!chatId) {
-        Alert.alert("Error", "Cannot delete message: Invalid chat ID");
+        console.error('No chatId available for deleting message');
         return;
       }
 
-      const response = await chatsService.deleteMessage(chatId, messageId);
-
-      if (response?.status === 'success') {
-        // Optimistically remove message from UI
-        setMessages(prevMessages =>
-          prevMessages.filter(msg => msg.id !== messageId)
-        );
-      } else {
-        Alert.alert("Error", "Failed to delete message. Please try again.");
+      const result = await chatsService.deleteMessage(Number(chatId), messageId);
+      if (result) {
+        console.log('Message deleted successfully');
       }
     } catch (error) {
       console.error('Error deleting message:', error);
-      Alert.alert("Error", "An error occurred while deleting the message.");
     }
-  }, [chatId]);
+  };
 
   // Handle reply to message
   const handleReplyToMessage = useCallback((messageToReply: Message) => {
@@ -366,6 +638,22 @@ export default function ChatScreen() {
       );
     }
   }, []);
+
+  // Handle opening user profile
+  const handleOpenUserProfile = useCallback(() => {
+    if (!chat?.other_user?.id) {
+      Alert.alert("Error", "Cannot open profile: User not found");
+      return;
+    }
+    
+    router.push({
+      pathname: "/chat/user-profile",
+      params: {
+        userId: chat.other_user.id.toString(),
+        chatId: chatId.toString()
+      }
+    });
+  }, [chat, chatId, router]);
 
   // Send edited message
   const sendEditedMessage = useCallback(async () => {
@@ -413,20 +701,35 @@ export default function ChatScreen() {
 
   // ---- Audio recording management ----
 
-  // Initialize audio permissions
+  // Initialize audio permissions and setup
   useEffect(() => {
     const setupAudioPermissions = async () => {
       try {
+        console.log('Setting up audio permissions...');
         const status = await AudioModule.requestRecordingPermissionsAsync();
         if (!status.granted) {
           Alert.alert('Permission required', 'Audio recording permission is required to send voice messages');
+          return;
+        }
+        
+        // Initialize audio recorder
+        try {
+          await audioRecorder.prepareToRecordAsync();
+          console.log('Audio recorder initialized successfully');
+          setAudioInitialized(true);
+        } catch (recorderError) {
+          console.error('Error initializing audio recorder:', recorderError);
+          Alert.alert('Audio Error', 'Failed to initialize audio recorder. Please restart the app.');
         }
       } catch (error) {
         console.error('Error requesting audio permissions:', error);
+        Alert.alert('Permission Error', 'Failed to get audio permissions. Please check your device settings.');
       }
     };
     setupAudioPermissions();
-  }, []);
+  }, [audioRecorder]);
+
+
 
   // ---- UI event handlers ----
 
@@ -727,6 +1030,28 @@ export default function ChatScreen() {
     }
   }, [chatId]);
 
+  // Helper function to emit own message sent event
+  const emitOwnMessageSent = useCallback((message: any) => {
+    webSocketService.emitEvent('chat.own.message.sent', {
+      chatId: chatId,
+      message: {
+        id: message.id,
+        chat_id: message.chat_id,
+        sender_id: message.sender_id,
+        content: message.content,
+        message_type: message.message_type,
+        created_at: message.created_at,
+        updated_at: message.updated_at,
+        is_mine: true,
+        sender: message.sender ? {
+          id: message.sender.id,
+          name: message.sender.email || 'You',
+          avatar: undefined
+        } : undefined
+      }
+    });
+  }, [chatId]);
+
   // Send text message
   const handleSend = useCallback(async () => {
     // Handle editing existing message
@@ -783,6 +1108,9 @@ export default function ChatScreen() {
           
           return newMessages;
         });
+
+        // Emit event to update chat list with own message
+        emitOwnMessageSent(response.data.message);
       } else {
         // This should not happen as chatsService.sendMessage always returns a response
         // But just in case, show an error message
@@ -825,13 +1153,20 @@ export default function ChatScreen() {
   // Start recording function
   const startRecording = useCallback(async () => {
     try {
+      console.log('Starting voice recording...');
+      
+      if (!audioInitialized) {
+        Alert.alert('Audio Error', 'Audio system not ready. Please wait a moment and try again.');
+        return;
+      }
+      
       const status = await AudioModule.requestRecordingPermissionsAsync();
       if (!status.granted) {
         Alert.alert('Permission required', 'Audio recording permission is required to send voice messages');
         return;
       }
-      await audioRecorder.prepareToRecordAsync();
-      audioRecorder.record();
+      
+      // Reset recording state
       setRecordingState(prev => ({
         ...prev,
         isRecording: true,
@@ -839,6 +1174,12 @@ export default function ChatScreen() {
         showVoiceMessage: false,
         recordedAudio: null
       }));
+      
+      // Start recording
+      await audioRecorder.record();
+      
+      console.log('Recording started successfully');
+      
       // Start timer
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
       recordingTimerRef.current = setInterval(() => {
@@ -847,28 +1188,42 @@ export default function ChatScreen() {
     } catch (error) {
       console.error('Error starting recording:', error);
       Alert.alert('Recording Error', 'Failed to start recording. Please try again.');
+      setRecordingState(prev => ({
+        ...prev,
+        isRecording: false
+      }));
     }
-  }, [audioRecorder]);
+  }, [audioRecorder, audioInitialized]);
 
   // Stop recording function
   const stopRecording = useCallback(async () => {
     try {
+      console.log('Stopping voice recording...');
+      
+      // Stop timer first
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      
+      // Stop recording
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
+      
+      console.log('Recording stopped, URI:', uri);
+      
       if (!uri) {
         throw new Error('Recording URI is null');
       }
+      
       setRecordingState(prev => ({
         ...prev,
         isRecording: false,
         recordedAudio: { uri },
         showVoiceMessage: true
       }));
-      // Stop timer
-      if (recordingTimerRef.current) {
-        clearInterval(recordingTimerRef.current);
-        recordingTimerRef.current = null;
-      }
+      
+      console.log('Recording state updated successfully');
     } catch (error) {
       console.error('Error stopping recording:', error);
       setRecordingState(prev => ({
@@ -886,19 +1241,33 @@ export default function ChatScreen() {
   // Cancel recording function
   const cancelRecording = useCallback(async () => {
     try {
+      console.log('Canceling voice recording...');
+      
+      // Stop timer first
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      
+      // Stop recording
       await audioRecorder.stop();
+      
       setRecordingState({
         isRecording: false,
         duration: 0,
         recordedAudio: null,
         showVoiceMessage: false
       });
-      if (recordingTimerRef.current) {
-        clearInterval(recordingTimerRef.current);
-        recordingTimerRef.current = null;
-      }
+      
+      console.log('Recording canceled successfully');
     } catch (error) {
       console.error('Error canceling recording:', error);
+      setRecordingState({
+        isRecording: false,
+        duration: 0,
+        recordedAudio: null,
+        showVoiceMessage: false
+      });
     }
   }, [audioRecorder]);
 
@@ -906,19 +1275,52 @@ export default function ChatScreen() {
   const playRecordedAudio = useCallback(async () => {
     try {
       const { recordedAudio } = recordingState;
-      if (!recordedAudio) return;
+      if (!recordedAudio) {
+        console.log('No recorded audio to play');
+        return;
+      }
+      
+      console.log('Playing recorded audio:', recordedAudio.uri);
+      
+      // If already playing, pause it
+      if (audioPlayback.isPlaying) {
+        try {
+          await player.pause();
+          setAudioPlayback(prev => ({
+            ...prev,
+            isPlaying: false,
+            currentMessageId: null
+          }));
+          console.log('Audio playback paused');
+          return;
+        } catch (pauseError) {
+          console.error('Error pausing audio:', pauseError);
+        }
+      }
+      
+      // Set the player URI and play
       setPlayerUri(recordedAudio.uri);
-      player.play();
-      setAudioPlayback(prev => ({
-        ...prev,
-        isPlaying: true,
-        currentMessageId: null
-      }));
+      
+      // Small delay to ensure URI is set
+      setTimeout(async () => {
+        try {
+          await player.play();
+          setAudioPlayback(prev => ({
+            ...prev,
+            isPlaying: true,
+            currentMessageId: null
+          }));
+          console.log('Audio playback started');
+        } catch (playError) {
+          console.error('Error playing audio:', playError);
+          Alert.alert('Playback Error', 'Failed to play recording. Please try again.');
+        }
+      }, 200);
     } catch (error) {
-      console.error('Error playing audio:', error);
+      console.error('Error setting up audio playback:', error);
       Alert.alert('Playback Error', 'Failed to play recording. Please try again.');
     }
-  }, [recordingState, player]);
+  }, [recordingState, player, audioPlayback.isPlaying]);
 
   // ---- Utility functions ----
 
@@ -933,7 +1335,15 @@ export default function ChatScreen() {
   const sendVoiceMessage = useCallback(async () => {
     try {
       const { recordedAudio, duration } = recordingState;
-      if (!recordedAudio) return;
+      if (!recordedAudio) {
+        console.log('No recorded audio to send');
+        return;
+      }
+
+      console.log('Sending voice message:', {
+        uri: recordedAudio.uri,
+        duration: duration
+      });
 
       // Check if chatId is valid
       if (!chatId) {
@@ -943,23 +1353,26 @@ export default function ChatScreen() {
 
       setIsSending(true);
 
-      // Create FormData with the actual file
-      const formData = new FormData();
-      formData.append('content', `Voice message (${formatDuration(duration)})`);
-      formData.append('message_type', 'voice');
-      formData.append('media_data', JSON.stringify({ duration }));
+      // Verify the file exists and has content
+      try {
+        const fileResponse = await fetch(recordedAudio.uri, { method: 'HEAD' });
+        if (!fileResponse.ok) {
+          throw new Error('Recorded file is not accessible');
+        }
+        console.log('File verification passed');
+      } catch (fileError) {
+        console.error('File verification failed:', fileError);
+        Alert.alert('Recording Error', 'The recorded file is invalid. Please try recording again.');
+        return;
+      }
 
-      // Add the actual file
-      formData.append('media_file', {
-        uri: recordedAudio.uri,
-        type: 'audio/m4a',
-        name: 'voice-message.m4a'
-      } as any);
-
-      // Send the message using the new voice message service
-      const response = await chatsService.sendVoiceMessage(chatId, formData);
+      // Send the voice message using the proper method
+      console.log('Sending voice message to API...');
+      const response = await chatsService.sendVoiceMessage(chatId, recordedAudio.uri, duration);
 
       if (response) {
+        console.log('Voice message sent successfully:', response);
+        
         // Add voice message with smooth animation effect
         setMessages(prevMessages => {
           const newMessages = mergeMessagesByID(prevMessages, [response.data.message]);
@@ -973,6 +1386,11 @@ export default function ChatScreen() {
           
           return newMessages;
         });
+
+        // Emit event to update chat list with own voice message
+        emitOwnMessageSent(response.data.message);
+        
+        // Reset recording state
         setRecordingState(prev => ({
           ...prev,
           recordedAudio: null,
@@ -1068,7 +1486,7 @@ export default function ChatScreen() {
       formData.append('media_file', fileInfo as any);
 
       // Send the file
-      const response = await chatsService.sendVoiceMessage(chatId, formData);
+      const response = await chatsService.sendFileMessage(chatId, formData);
 
       if (response) {
         // Add file message with smooth animation effect
@@ -1084,6 +1502,9 @@ export default function ChatScreen() {
           
           return newMessages;
         });
+
+        // Emit event to update chat list with own file message
+        emitOwnMessageSent(response.data.message);
       } else {
         Alert.alert(
           "Error",
@@ -1183,6 +1604,32 @@ export default function ChatScreen() {
     }
   }, []);
 
+  // Stop typing indicator
+  const stopTypingIndicator = useCallback(async () => {
+    try {
+      if (!chatId) return;
+      
+      console.log('Stopping typing indicator for chat:', chatId);
+      
+      const currentUserId = await getCurrentUserId();
+      if (!currentUserId) return;
+      
+      // Send stop typing indicator via WebSocket (immediate)
+      webSocketService.sendTyping(chatId, {
+        user_id: currentUserId,
+        id: currentUserId,
+        name: 'You',
+        user_name: 'You',
+        is_typing: false
+      });
+      
+      // Send stop typing status via API (persistent)
+      await webSocketService.updateTypingStatus(chatId, false);
+    } catch (error) {
+      console.error('Error stopping typing indicator:', error);
+    }
+  }, [chatId]);
+
   // Send typing indicator - debounced for performance
   const debouncedSendTypingIndicator = useMemo(
       () => debounce(async () => {
@@ -1191,10 +1638,23 @@ export default function ChatScreen() {
             console.warn('Cannot send typing indicator: Invalid chat ID');
             return;
           }
-          const currentUserId = await getCurrentUserId();
-          if (!currentUserId || !chatChannel) {
+          
+          // Check WebSocket connection
+          if (!webSocketService.isConnected()) {
+            console.warn('Cannot send typing indicator: WebSocket not connected');
+            console.log('WebSocket connection state:', webSocketService.getConnectionState());
             return;
           }
+          
+          console.log('WebSocket is connected, proceeding with typing indicator');
+          
+          const currentUserId = await getCurrentUserId();
+          if (!currentUserId) {
+            console.warn('Cannot send typing indicator: Missing user ID');
+            return;
+          }
+          
+          console.log('Current user ID:', currentUserId);
           
           // Get current user info for typing indicator
           const userData = await AsyncStorage.getItem('user_data');
@@ -1209,7 +1669,9 @@ export default function ChatScreen() {
             }
           }
           
-          // Send typing indicator via WebSocket service with proper user info
+          console.log('Sending typing indicator via WebSocket for chat:', chatId);
+          // Send typing indicator via WebSocket service (immediate)
+          console.log('Sending typing indicator via WebSocket for chat:', chatId, 'user:', userName);
           webSocketService.sendTyping(chatId, {
             user_id: currentUserId,
             id: currentUserId,
@@ -1217,13 +1679,29 @@ export default function ChatScreen() {
             user_name: userName
           });
           
+          console.log('Sending typing status via API for chat:', chatId);
+          // Send typing status via API (persistent)
+          await webSocketService.updateTypingStatus(chatId, true);
+          
           setLastTypingTime(Date.now());
+          
+          // Clear existing timeout and set new one
+          if (typingTimeoutRef.current) {
+            clearTimeout(typingTimeoutRef.current);
+          }
+          
+          // Stop typing indicator after 3 seconds of inactivity
+          typingTimeoutRef.current = setTimeout(() => {
+            stopTypingIndicator();
+          }, 3000);
         } catch (error) {
           console.error('Error sending typing indicator:', error);
         }
       }, 1000),
-      [chatId, chatChannel]
+      [chatId, stopTypingIndicator]
   );
+
+
 
   // Handle message input change
   const handleMessageChange = useCallback((text: string) => {
@@ -1235,9 +1713,14 @@ export default function ChatScreen() {
 
     // Send typing indicator if message has content
     if (text.trim().length > 0) {
+      console.log('Sending typing indicator for text:', text.trim().length, 'characters');
       debouncedSendTypingIndicator();
+    } else {
+      // Stop typing indicator if message is empty
+      console.log('Stopping typing indicator - empty input');
+      stopTypingIndicator();
     }
-  }, [debouncedSendTypingIndicator, editingMessage]);
+  }, [debouncedSendTypingIndicator, stopTypingIndicator, editingMessage]);
 
   // ---- Rendering functions ----
 
@@ -1420,6 +1903,7 @@ export default function ChatScreen() {
             onPhoneCall={handlePhoneCall}
             onVideoCall={handleVideoCall}
             onOpenOptions={() => setOptionsVisible(true)}
+            onOpenUserProfile={handleOpenUserProfile}
             getProfilePhotoUrl={getProfilePhotoUrl}
           />
         )}
@@ -1438,7 +1922,7 @@ export default function ChatScreen() {
             behavior={Platform.OS === "ios" ? "padding" : "height"}
             keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 0}
             style={{ flex: 1 }}
-            enabled={true}
+            enabled={!recordingState.isRecording}
         >
           <Box flex={1}>
             <FlatList
@@ -1454,14 +1938,47 @@ export default function ChatScreen() {
                 windowSize={21}
                 removeClippedSubviews={Platform.OS === 'android'}
                 showsVerticalScrollIndicator={false}
-                ListFooterComponent={loadingMore ? (
-                    <Box py="$2" alignItems="center">
-                      <HStack space="sm" alignItems="center">
-                        <ActivityIndicator size="small" color="#8B5CF6" />
-                        <Text color="#6B7280" fontSize="$xs">Loading older messages...</Text>
-                      </HStack>
-                    </Box>
-                ) : null}
+                ListFooterComponent={
+                  <>
+                    {loadingMore ? (
+                      <Box py="$2" alignItems="center">
+                        <HStack space="sm" alignItems="center">
+                          <ActivityIndicator size="small" color="#8B5CF6" />
+                          <Text color="#6B7280" fontSize="$xs">Loading older messages...</Text>
+                        </HStack>
+                      </Box>
+                    ) : null}
+                    {isTyping && typingUser && (
+                      <Box py="$2" px="$4">
+                        <HStack space="sm" alignItems="center">
+                          <Avatar size="xs">
+                            <AvatarImage
+                              source={{ uri: chat?.other_user?.profile_photo_path || "https://via.placeholder.com/30" }}
+                              alt="User avatar"
+                            />
+                          </Avatar>
+                          <Box
+                            bg="#F3F4F6"
+                            borderRadius="$2xl"
+                            px="$3"
+                            py="$2"
+                          >
+                            <HStack space="xs" alignItems="center">
+                              <Text color="#6B7280" fontSize="$xs" fontStyle="italic">
+                                {typingUser} is typing...
+                              </Text>
+                              <HStack space="xs" alignItems="center">
+                                <Box width={2} height={2} borderRadius={1} bg="#6B7280" />
+                                <Box width={2} height={2} borderRadius={1} bg="#6B7280" />
+                                <Box width={2} height={2} borderRadius={1} bg="#6B7280" />
+                              </HStack>
+                            </HStack>
+                          </Box>
+                        </HStack>
+                      </Box>
+                    )}
+                  </>
+                }
                 onScroll={(event) => {
                   if (!event || !event.nativeEvent || !event.nativeEvent.contentOffset || !event.nativeEvent.contentSize || !event.nativeEvent.layoutMeasurement) return;
                   // Copy values immediately

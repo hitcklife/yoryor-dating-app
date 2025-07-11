@@ -4,6 +4,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { notificationService } from './notification-service';
 import { apiClient } from './api-client';
 import { CONFIG } from '@/services/config';
+import NetInfo from '@react-native-community/netinfo';
+import { AppState, AppStateStatus } from 'react-native';
 
 // === UNIFIED EVENT SYSTEM ===
 interface ChatMessage {
@@ -114,24 +116,22 @@ interface UnifiedWebSocketEvents {
   'user.like.new': (data: Like) => void;
   'user.notification.general': (data: Notification) => void;
   'user.call.incoming': (data: IncomingCall) => void;
+  'user.call.initiated': (data: any) => void;
   'user.unread.update': (data: UnreadUpdate) => void;
   
   // Chat List Events
   'chatlist.message.new': (data: { chatId: number; message: ChatMessage }) => void;
   'chatlist.chat.updated': (data: { chatId: number; chat: any }) => void;
   'chatlist.unread.changed': (data: { chatId: number; unreadCount: number }) => void;
+  'chat.own.message.sent': (data: { chatId: number; message: ChatMessage }) => void;
   
   // Connection Events
   'connection.state.changed': (data: { state: ConnectionState; quality: ConnectionQuality }) => void;
   'connection.error': (data: { error: any; canRetry: boolean }) => void;
   
   // Presence Events
-  'presence.user.joined': (data: PresenceEvent) => void;
-  'presence.user.left': (data: PresenceEvent) => void;
-  'presence.users.here': (data: { users: PresenceUser[] }) => void;
   'presence.chat.user.joined': (data: PresenceEvent & { chatId: number }) => void;
   'presence.chat.user.left': (data: PresenceEvent & { chatId: number }) => void;
-  'presence.online.status.changed': (data: { userId: number; isOnline: boolean }) => void;
   'presence.typing.status.changed': (data: TypingStatus) => void;
 }
 
@@ -164,13 +164,18 @@ interface QueuedMessage {
 class MessageQueue {
   private queue: QueuedMessage[] = [];
   private processing = false;
-  private maxQueueSize = 100;
+  private maxQueueSize = 50; // Reduced from 100 for memory optimization
   private maxRetries = 3;
 
   add(message: Omit<QueuedMessage, 'id' | 'timestamp' | 'retryCount'>): void {
-    // Remove oldest messages if queue is full
+    // Remove oldest low-priority messages if queue is full
     if (this.queue.length >= this.maxQueueSize) {
-      this.queue.shift();
+      const lowPriorityIndex = this.queue.findIndex(msg => msg.priority === 'low');
+      if (lowPriorityIndex !== -1) {
+        this.queue.splice(lowPriorityIndex, 1);
+      } else {
+        this.queue.shift();
+      }
     }
 
     const queuedMessage: QueuedMessage = {
@@ -252,33 +257,42 @@ class MessageQueue {
   }
 }
 
-// === CHANNEL MANAGER ===
+// === OPTIMIZED CHANNEL MANAGER ===
 interface ChannelInfo {
   channel: any;
   lastActivity: Date;
   subscribers: number;
   chatId?: number;
+  isActive: boolean;
 }
 
 class ChannelManager {
   private channels = new Map<string, ChannelInfo>();
-  private maxConcurrentChannels = 10;
-  private inactiveTimeoutMs = 5 * 60 * 1000; // 5 minutes
-  private cleanupIntervalMs = 60 * 1000; // 1 minute
+  private maxConcurrentChannels = 5; // Reduced from 10 for memory optimization
+  private inactiveTimeoutMs = 3 * 60 * 1000; // Reduced to 3 minutes
+  private cleanupIntervalMs = 30 * 1000; // Reduced to 30 seconds
   private cleanupTimer: any = null;
+  private activeChats = new Set<number>();
 
   subscribe(channelName: string, channel: any, chatId?: number): void {
-    // Remove oldest inactive channel if at limit
+    // Check if we need to cleanup before adding
     if (this.channels.size >= this.maxConcurrentChannels) {
       this.removeOldestInactiveChannel();
     }
 
-    this.channels.set(channelName, {
+    const channelInfo: ChannelInfo = {
       channel,
       lastActivity: new Date(),
       subscribers: 1,
-      chatId
-    });
+      chatId,
+      isActive: true
+    };
+
+    this.channels.set(channelName, channelInfo);
+    
+    if (chatId) {
+      this.activeChats.add(chatId);
+    }
 
     this.startCleanupTimer();
     console.log(`Channel subscribed: ${channelName} (${this.channels.size}/${this.maxConcurrentChannels})`);
@@ -288,11 +302,21 @@ class ChannelManager {
     const channelInfo = this.channels.get(channelName);
     if (channelInfo) {
       try {
-        channelInfo.channel.unsubscribe();
+        // Properly cleanup the channel
+        if (channelInfo.channel && typeof channelInfo.channel.unsubscribe === 'function') {
+          channelInfo.channel.unsubscribe();
+        }
+        
+        if (channelInfo.chatId) {
+          this.activeChats.delete(channelInfo.chatId);
+        }
+        
         this.channels.delete(channelName);
         console.log(`Channel unsubscribed: ${channelName}`);
       } catch (error) {
         console.error(`Error unsubscribing from ${channelName}:`, error);
+        // Force removal even if unsubscribe fails
+        this.channels.delete(channelName);
       }
     }
   }
@@ -301,6 +325,14 @@ class ChannelManager {
     const channelInfo = this.channels.get(channelName);
     if (channelInfo) {
       channelInfo.lastActivity = new Date();
+      channelInfo.isActive = true;
+    }
+  }
+
+  setInactive(channelName: string): void {
+    const channelInfo = this.channels.get(channelName);
+    if (channelInfo) {
+      channelInfo.isActive = false;
     }
   }
 
@@ -317,19 +349,34 @@ class ChannelManager {
     return this.channels.has(channelName);
   }
 
+  isActiveChatChannel(chatId: number): boolean {
+    return this.activeChats.has(chatId);
+  }
+
   private removeOldestInactiveChannel(): void {
     let oldestChannel: string | null = null;
     let oldestTime = new Date();
 
+    // First try to remove inactive channels
     for (const [channelName, channelInfo] of this.channels) {
-      if (channelInfo.lastActivity < oldestTime) {
+      if (!channelInfo.isActive && channelInfo.lastActivity < oldestTime) {
         oldestTime = channelInfo.lastActivity;
         oldestChannel = channelName;
       }
     }
 
+    // If no inactive channels, remove the oldest one
+    if (!oldestChannel) {
+      for (const [channelName, channelInfo] of this.channels) {
+        if (channelInfo.lastActivity < oldestTime) {
+          oldestTime = channelInfo.lastActivity;
+          oldestChannel = channelName;
+        }
+      }
+    }
+
     if (oldestChannel) {
-      console.log(`Removing oldest inactive channel: ${oldestChannel}`);
+      console.log(`Removing oldest channel: ${oldestChannel}`);
       this.unsubscribe(oldestChannel);
     }
   }
@@ -348,7 +395,7 @@ class ChannelManager {
 
     for (const [channelName, channelInfo] of this.channels) {
       const timeSinceActivity = now.getTime() - channelInfo.lastActivity.getTime();
-      if (timeSinceActivity > this.inactiveTimeoutMs) {
+      if (!channelInfo.isActive && timeSinceActivity > this.inactiveTimeoutMs) {
         channelsToRemove.push(channelName);
       }
     }
@@ -357,12 +404,22 @@ class ChannelManager {
       console.log(`Cleaning up inactive channel: ${channelName}`);
       this.unsubscribe(channelName);
     });
+
+    // Stop timer if no channels
+    if (this.channels.size === 0 && this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
   }
 
   clear(): void {
-    for (const [channelName] of this.channels) {
+    // Unsubscribe from all channels
+    const channelNames = Array.from(this.channels.keys());
+    channelNames.forEach(channelName => {
       this.unsubscribe(channelName);
-    }
+    });
+    
+    this.activeChats.clear();
     
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
@@ -372,6 +429,61 @@ class ChannelManager {
 
   getActiveChannels(): string[] {
     return Array.from(this.channels.keys());
+  }
+
+  getChannelCount(): number {
+    return this.channels.size;
+  }
+}
+
+// === TYPING INDICATOR MANAGER ===
+class TypingIndicatorManager {
+  private typingUsers = new Map<string, { timeout: any; userName: string }>();
+  private typingDebounceMs = 3000; // 3 seconds
+
+  addTypingUser(chatId: number, userId: number, userName: string, callback: (chatId: number, isTyping: boolean, userName?: string) => void): void {
+    const key = `${chatId}-${userId}`;
+    
+    // Clear existing timeout
+    const existing = this.typingUsers.get(key);
+    if (existing) {
+      clearTimeout(existing.timeout);
+    }
+
+    // Set new timeout
+    const timeout = setTimeout(() => {
+      this.typingUsers.delete(key);
+      callback(chatId, false);
+    }, this.typingDebounceMs);
+
+    this.typingUsers.set(key, { timeout, userName });
+    callback(chatId, true, userName);
+  }
+
+  removeTypingUser(chatId: number, userId: number): void {
+    const key = `${chatId}-${userId}`;
+    const existing = this.typingUsers.get(key);
+    if (existing) {
+      clearTimeout(existing.timeout);
+      this.typingUsers.delete(key);
+    }
+  }
+
+  getTypingUsersForChat(chatId: number): string[] {
+    const typingUserNames: string[] = [];
+    for (const [key, value] of this.typingUsers) {
+      if (key.startsWith(`${chatId}-`)) {
+        typingUserNames.push(value.userName);
+      }
+    }
+    return typingUserNames;
+  }
+
+  clear(): void {
+    for (const [key, value] of this.typingUsers) {
+      clearTimeout(value.timeout);
+    }
+    this.typingUsers.clear();
   }
 }
 
@@ -397,6 +509,12 @@ class WebSocketService {
   private reconnectTimeout: any = null;
   private heartbeatInterval: any = null;
   private heartbeatTimer: any = null;
+  private presenceHeartbeatInterval: any = null;
+  
+  // Network & App State
+  private netInfoUnsubscribe: any = null;
+  private appStateSubscription: any = null;
+  private lastAppState: AppStateStatus = 'active';
   
   // Event System
   private eventListeners = new Map<keyof UnifiedWebSocketEvents, Set<any>>();
@@ -412,6 +530,78 @@ class WebSocketService {
   private presenceChannels = new Map<string, any>();
   private currentUserPresence: PresenceUser | null = null;
   
+  // Typing Indicator Manager
+  private typingManager = new TypingIndicatorManager();
+  
+  // Performance Optimization
+  private lastActivityTime = Date.now();
+  private inactivityTimeoutMs = 10 * 60 * 1000; // 10 minutes
+  private inactivityTimer: any = null;
+
+  constructor() {
+    // Set up network monitoring
+    this.setupNetworkMonitoring();
+    // Set up app state monitoring
+    this.setupAppStateMonitoring();
+  }
+
+  private setupNetworkMonitoring(): void {
+    this.netInfoUnsubscribe = NetInfo.addEventListener(state => {
+      console.log('Network state changed:', state.isConnected ? 'connected' : 'disconnected');
+      
+      if (state.isConnected && this.connectionState === 'disconnected') {
+        // Network is back, try to reconnect
+        this.attemptReconnect();
+      } else if (!state.isConnected && this.connectionState === 'connected') {
+        // Network is gone, update state
+        this.updateConnectionQuality('offline');
+      }
+    });
+  }
+
+  private setupAppStateMonitoring(): void {
+    this.appStateSubscription = AppState.addEventListener('change', nextAppState => {
+      console.log('App state changed:', this.lastAppState, '->', nextAppState);
+      
+      if (this.lastAppState.match(/inactive|background/) && nextAppState === 'active') {
+        // App came to foreground
+        if (this.connectionState !== 'connected') {
+          this.attemptReconnect();
+        } else {
+          // Send presence heartbeat
+          this.sendPresenceHeartbeat();
+        }
+      } else if (nextAppState.match(/inactive|background/)) {
+        // App went to background
+        this.updateOnlineStatus(false);
+      }
+      
+      this.lastAppState = nextAppState;
+    });
+  }
+
+  private setupInactivityTimer(): void {
+    if (this.inactivityTimer) {
+      clearTimeout(this.inactivityTimer);
+    }
+
+    this.inactivityTimer = setTimeout(() => {
+      const timeSinceActivity = Date.now() - this.lastActivityTime;
+      if (timeSinceActivity >= this.inactivityTimeoutMs) {
+        console.log('Inactivity detected, reducing connection resources...');
+        // Mark all channels as inactive
+        this.channelManager.getActiveChannels().forEach(channelName => {
+          this.channelManager.setInactive(channelName);
+        });
+      }
+    }, this.inactivityTimeoutMs);
+  }
+
+  private updateLastActivity(): void {
+    this.lastActivityTime = Date.now();
+    this.setupInactivityTimer();
+  }
+
   // Heartbeat System
   private startHeartbeat(): void {
     if (this.heartbeatInterval) return;
@@ -486,6 +676,24 @@ class WebSocketService {
       this.heartbeatTimer = null;
     }
   }
+
+  private startPresenceHeartbeat(): void {
+    if (this.presenceHeartbeatInterval) return;
+
+    // Send presence heartbeat every 30 seconds
+    this.presenceHeartbeatInterval = setInterval(() => {
+      if (this.isConnected()) {
+        this.sendPresenceHeartbeat();
+      }
+    }, 30000);
+  }
+
+  private stopPresenceHeartbeat(): void {
+    if (this.presenceHeartbeatInterval) {
+      clearInterval(this.presenceHeartbeatInterval);
+      this.presenceHeartbeatInterval = null;
+    }
+  }
   
   private updateConnectionMetrics(latency: number): void {
     this.connectionMetrics.latencyMs = latency;
@@ -539,6 +747,14 @@ class WebSocketService {
         }
       });
     }
+    
+    // Update last activity on any event
+    this.updateLastActivity();
+  }
+
+  // Public method to emit events
+  public emitEvent<T extends keyof UnifiedWebSocketEvents>(event: T, data: Parameters<UnifiedWebSocketEvents[T]>[0]): void {
+    this.emit(event, data);
   }
   
   // Main Service Methods
@@ -562,6 +778,7 @@ class WebSocketService {
         this.pusherClient.disconnect();
       }
 
+      // Configure Pusher with optimizations
       this.pusherClient = new Pusher(CONFIG.PUSHER.key, {
         cluster: CONFIG.PUSHER.cluster,
         forceTLS: CONFIG.PUSHER.forceTLS,
@@ -574,6 +791,8 @@ class WebSocketService {
         },
         activityTimeout: 120000,
         pongTimeout: 30000,
+        enabledTransports: ['ws', 'wss'], // Use only WebSocket transports
+        disabledTransports: ['sockjs'], // Disable fallback transports
       });
 
       this.setupPusherListeners();
@@ -600,6 +819,8 @@ class WebSocketService {
       
       this.subscribeToGlobalChannel();
       this.startHeartbeat();
+      this.startPresenceHeartbeat();
+      this.setupInactivityTimer();
       
       // Initialize presence system (async)
       this.initializePresence().catch(error => {
@@ -616,8 +837,16 @@ class WebSocketService {
       this.connectionMetrics.lastDisconnected = new Date();
       this.updateConnectionQuality('offline');
       this.stopHeartbeat();
+      this.stopPresenceHeartbeat();
       this.channelManager.clear();
       this.globalChannel = null;
+      this.typingManager.clear();
+      
+      if (this.inactivityTimer) {
+        clearTimeout(this.inactivityTimer);
+        this.inactivityTimer = null;
+      }
+      
       this.attemptReconnect();
     });
 
@@ -765,6 +994,26 @@ class WebSocketService {
         }
       });
 
+      // Listen for call initiated events (new format)
+      this.globalChannel.listen('.CallInitiated', (e: any) => {
+        console.log('📞 WebSocket: Call initiated received:', e);
+        try {
+          this.emit('user.call.initiated', e.call);
+          
+          // Show notification for incoming call
+          const callerName = e.call?.caller?.email || 'Someone';
+          const callType = e.call?.type === 'video' ? 'Video' : 'Voice';
+          
+          notificationService.showNotification(
+            `Incoming ${callType} Call 📞`,
+            `${callerName} is calling you!`,
+            { type: 'call', priority: 'high' }
+          );
+        } catch (error) {
+          console.error('Error processing call initiated:', error);
+        }
+      });
+
       // Listen for general notifications
       this.globalChannel.listen('.GeneralNotification', (e: any) => {
         console.log('General notification received:', e);
@@ -851,47 +1100,99 @@ class WebSocketService {
         }
       });
 
+      // Listen for MessageSent events (new message notifications)
+      this.globalChannel.listen('.MessageSent', async (e: any) => {
+        console.log('MessageSent received:', e);
+        
+        try {
+          if (e.message && e.chat_id) {
+            const currentUserId = await this.getCurrentUserId();
+            
+            if (currentUserId) {
+              const messageWithOwnership = {
+                ...e.message,
+                is_mine: e.message.sender_id === currentUserId
+              };
+
+              this.emit('chatlist.message.new', {
+                chatId: e.chat_id,
+                message: messageWithOwnership
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error processing MessageSent:', error);
+        }
+      });
+
+      // Listen for UnreadCountUpdate events
+      this.globalChannel.listen('.UnreadCountUpdate', (e: any) => {
+        console.log('UnreadCountUpdate received:', e);
+        
+        try {
+          if (e.chat_id) {
+            // Update specific chat unread count
+            this.emit('chatlist.unread.changed', {
+              chatId: e.chat_id,
+              unreadCount: e.chat_unread_count
+            });
+
+            // Also emit global unread count update
+            this.emit('user.unread.update', {
+              count: e.total_unread_count,
+              total_count: e.total_unread_count
+            });
+          }
+        } catch (error) {
+          console.error('Error processing UnreadCountUpdate:', error);
+        }
+      });
+
       console.log(`Subscribed to global channel: ${channelName}`);
     } catch (error) {
       console.error('Error subscribing to global channel:', error);
     }
   }
   
-  private attemptReconnect(): void {
-    AsyncStorage.getItem('auth_token').then(token => {
-      if (!token) {
-        console.log('No auth token available, skipping reconnect attempt');
-        this.setConnectionState('failed');
-        return;
-      }
+  private async attemptReconnect(): Promise<void> {
+    // Check network connectivity first
+    const netInfo = await NetInfo.fetch();
+    if (!netInfo.isConnected) {
+      console.log('No network connection, skipping reconnect attempt');
+      this.setConnectionState('disconnected');
+      return;
+    }
 
-      if (this.connectionMetrics.reconnectCount >= this.maxReconnectAttempts) {
-        console.error(`Maximum reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
-        this.setConnectionState('failed');
-        this.emit('connection.error', {
-          error: new Error('Max reconnect attempts reached'),
-          canRetry: false
-        });
-        return;
-      }
-
-      this.setConnectionState('reconnecting');
-      this.connectionMetrics.reconnectCount++;
-
-      const baseDelay = this.getReconnectDelay();
-      const jitter = Math.random() * 1000;
-      const delay = baseDelay + jitter;
-      
-      console.log(`Attempting to reconnect in ${Math.round(delay / 1000)} seconds (attempt ${this.connectionMetrics.reconnectCount}/${this.maxReconnectAttempts})...`);
-
-      this.reconnectTimeout = setTimeout(() => {
-        console.log(`Reconnecting... (attempt ${this.connectionMetrics.reconnectCount}/${this.maxReconnectAttempts})`);
-        this.initialize();
-      }, delay);
-    }).catch(error => {
-      console.error('Error checking auth token for reconnect:', error);
+    const token = await AsyncStorage.getItem('auth_token');
+    if (!token) {
+      console.log('No auth token available, skipping reconnect attempt');
       this.setConnectionState('failed');
-    });
+      return;
+    }
+
+    if (this.connectionMetrics.reconnectCount >= this.maxReconnectAttempts) {
+      console.error(`Maximum reconnect attempts (${this.maxReconnectAttempts}) reached. Giving up.`);
+      this.setConnectionState('failed');
+      this.emit('connection.error', {
+        error: new Error('Max reconnect attempts reached'),
+        canRetry: false
+      });
+      return;
+    }
+
+    this.setConnectionState('reconnecting');
+    this.connectionMetrics.reconnectCount++;
+
+    const baseDelay = this.getReconnectDelay();
+    const jitter = Math.random() * 1000;
+    const delay = baseDelay + jitter;
+    
+    console.log(`Attempting to reconnect in ${Math.round(delay / 1000)} seconds (attempt ${this.connectionMetrics.reconnectCount}/${this.maxReconnectAttempts})...`);
+
+    this.reconnectTimeout = setTimeout(() => {
+      console.log(`Reconnecting... (attempt ${this.connectionMetrics.reconnectCount}/${this.maxReconnectAttempts})`);
+      this.initialize();
+    }, delay);
   }
   
   private getReconnectDelay(): number {
@@ -1033,17 +1334,27 @@ class WebSocketService {
         }
       });
 
-      // Listen for typing indicators
-      channel.listenForWhisper('typing', (e: any) => {
+      // Listen for typing indicators with improved handling
+      channel.listenForWhisper('typing', async (e: any) => {
         try {
-          const currentUserId = this.currentUserId;
+          const currentUserId = await this.getCurrentUserId();
           if (e.user_id && currentUserId && e.user_id !== currentUserId) {
-            this.emit('chat.typing', {
-              user_id: e.user_id,
-              user_name: e.name || e.user_name || `User ${e.user_id}`,
-              chat_id: chatId,
-              is_typing: true
-            });
+            const userName = e.name || e.user_name || `User ${e.user_id}`;
+            
+            // Use typing manager for better debouncing
+            this.typingManager.addTypingUser(
+              chatId, 
+              e.user_id, 
+              userName,
+              (chatId, isTyping, userName) => {
+                this.emit('chat.typing', {
+                  user_id: e.user_id,
+                  user_name: userName || '',
+                  chat_id: chatId,
+                  is_typing: isTyping
+                });
+              }
+            );
           }
         } catch (error) {
           console.error('Error processing typing indicator:', error);
@@ -1063,6 +1374,7 @@ class WebSocketService {
   unsubscribeFromChat(chatId: number): void {
     const channelName = `chat.${chatId}`;
     this.channelManager.unsubscribe(channelName);
+    this.typingManager.removeTypingUser(chatId, this.currentUserId || 0);
   }
   
   sendTyping(chatId: number, user: any): void {
@@ -1082,11 +1394,14 @@ class WebSocketService {
       const channelName = `chat.${chatId}`;
       const channel = this.channelManager.get(channelName);
       
-      if (channel) {
-        channel.whisper('typing', user);
-      } else {
-        console.warn(`No active channel found for chat ${chatId}`);
-      }
+              if (channel) {
+          channel.whisper('typing', user);
+          
+          // TODO: Also send to API when endpoint is available
+          // apiClient.presence.typing({ chat_id: chatId, is_typing: true })
+        } else {
+          console.warn(`No active channel found for chat ${chatId}`);
+        }
     } catch (error) {
       console.error('Error sending typing indicator:', error);
     }
@@ -1113,6 +1428,18 @@ class WebSocketService {
     return this.channelManager.getActiveChannels();
   }
 
+  getActiveChannelCount(): number {
+    return this.channelManager.getChannelCount();
+  }
+
+  isChannelActive(chatId: number): boolean {
+    return this.channelManager.isActiveChatChannel(chatId);
+  }
+
+  getTypingUsersForChat(chatId: number): string[] {
+    return this.typingManager.getTypingUsersForChat(chatId);
+  }
+
   setReconnectStrategy(strategy: ReconnectStrategy): void {
     this.reconnectStrategy = strategy;
   }
@@ -1133,9 +1460,16 @@ class WebSocketService {
         this.reconnectTimeout = null;
       }
 
+      if (this.inactivityTimer) {
+        clearTimeout(this.inactivityTimer);
+        this.inactivityTimer = null;
+      }
+
       this.stopHeartbeat();
+      this.stopPresenceHeartbeat();
       this.connectionMetrics.reconnectCount = 0;
       this.channelManager.clear();
+      this.typingManager.clear();
       
       // Clear presence channels and set offline
       this.clearPresenceChannels();
@@ -1164,6 +1498,17 @@ class WebSocketService {
       this.updateConnectionQuality('offline');
       this.currentUserId = null;
       this.messageQueue.clear();
+
+      // Clean up monitoring
+      if (this.netInfoUnsubscribe) {
+        this.netInfoUnsubscribe();
+        this.netInfoUnsubscribe = null;
+      }
+
+      if (this.appStateSubscription) {
+        this.appStateSubscription.remove();
+        this.appStateSubscription = null;
+      }
 
       console.log('WebSocket service disconnected');
     } catch (error) {
@@ -1225,72 +1570,6 @@ class WebSocketService {
   // === PRESENCE CHANNEL METHODS ===
   
   /**
-   * Subscribe to global online users presence channel
-   */
-  subscribeToGlobalPresence(): any {
-    if (!this.initialized || !this.echo) {
-      console.warn('WebSocket service not initialized for presence subscription');
-      return null;
-    }
-
-    const channelName = 'presence-online-users';
-    
-    if (this.presenceChannels.has(channelName)) {
-      console.log('Already subscribed to global presence');
-      return this.presenceChannels.get(channelName);
-    }
-
-    try {
-      // Add user data for presence channel authentication
-      const userData = {
-        user_id: this.currentUserId,
-        user_info: {
-          id: this.currentUserId,
-          name: 'User', // You can get this from user context
-          avatar: null
-        }
-      };
-
-      const channel = this.echo.join(channelName)
-        .here((users: any[]) => {
-          console.log('Users currently online:', users);
-          this.emit('presence.users.here', { users });
-        })
-        .joining((user: any) => {
-          console.log('User joined online:', user);
-          this.emit('presence.user.joined', {
-            user,
-            timestamp: new Date().toISOString()
-          });
-        })
-        .leaving((user: any) => {
-          console.log('User left online:', user);
-          this.emit('presence.user.left', {
-            user,
-            timestamp: new Date().toISOString()
-          });
-        })
-        .error((error: any) => {
-          console.error('Global presence channel error:', error);
-          // Handle auth error specifically
-          if (error.type === 'AuthError') {
-            console.error('Authentication failed for presence channel. Check backend authorization.');
-            console.error('Make sure your backend routes/channels.php authorizes presence channels properly.');
-            // Remove from presence channels map
-            this.presenceChannels.delete(channelName);
-          }
-        });
-
-      this.presenceChannels.set(channelName, channel);
-      console.log('Subscribed to global presence channel');
-      return channel;
-    } catch (error) {
-      console.error('Error subscribing to global presence:', error);
-      return null;
-    }
-  }
-
-  /**
    * Subscribe to chat-specific presence channel
    */
   subscribeToChatPresence(chatId: number): any {
@@ -1310,7 +1589,7 @@ class WebSocketService {
       const channel = this.echo.join(channelName)
         .here((users: any[]) => {
           console.log(`Users in chat ${chatId}:`, users);
-          this.emit('presence.users.here', { users });
+          // Note: This event is no longer emitted since we removed global presence
         })
         .joining((user: any) => {
           console.log(`User joined chat ${chatId}:`, user);
@@ -1342,89 +1621,6 @@ class WebSocketService {
   }
 
   /**
-   * Subscribe to user matches presence channel
-   */
-  subscribeToMatchesPresence(): any {
-    if (!this.initialized || !this.echo || !this.currentUserId) {
-      console.warn('WebSocket service not initialized for matches presence');
-      return null;
-    }
-
-    const channelName = `presence-user-matches.${this.currentUserId}`;
-    
-    if (this.presenceChannels.has(channelName)) {
-      console.log('Already subscribed to matches presence');
-      return this.presenceChannels.get(channelName);
-    }
-
-    try {
-      const channel = this.echo.private(channelName);
-
-      // Listen for match online status changes
-      channel.listen('.user.online.status.changed', (e: any) => {
-        console.log('Match online status changed:', e);
-        this.emit('presence.online.status.changed', {
-          userId: e.user_id,
-          isOnline: e.is_online
-        });
-      });
-
-      this.presenceChannels.set(channelName, channel);
-      console.log('Subscribed to matches presence channel');
-      return channel;
-    } catch (error) {
-      console.error('Error subscribing to matches presence:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Subscribe to dating activity presence (users actively browsing)
-   */
-  subscribeToDatingPresence(): any {
-    if (!this.initialized || !this.echo) {
-      console.warn('WebSocket service not initialized for dating presence');
-      return null;
-    }
-
-    const channelName = 'presence-dating-active';
-    
-    if (this.presenceChannels.has(channelName)) {
-      console.log('Already subscribed to dating presence');
-      return this.presenceChannels.get(channelName);
-    }
-
-    try {
-      const channel = this.echo.join(channelName)
-        .here((users: any[]) => {
-          console.log('Users actively dating:', users);
-          this.emit('presence.users.here', { users });
-        })
-        .joining((user: any) => {
-          console.log('User started dating activity:', user);
-          this.emit('presence.user.joined', {
-            user,
-            timestamp: new Date().toISOString()
-          });
-        })
-        .leaving((user: any) => {
-          console.log('User stopped dating activity:', user);
-          this.emit('presence.user.left', {
-            user,
-            timestamp: new Date().toISOString()
-          });
-        });
-
-      this.presenceChannels.set(channelName, channel);
-      console.log('Subscribed to dating presence channel');
-      return channel;
-    } catch (error) {
-      console.error('Error subscribing to dating presence:', error);
-      return null;
-    }
-  }
-
-  /**
    * Update user online status
    */
   async updateOnlineStatus(isOnline: boolean): Promise<void> {
@@ -1445,7 +1641,7 @@ class WebSocketService {
   }
 
   /**
-   * Send typing status to chat
+   * Update typing status for a chat
    */
   async updateTypingStatus(chatId: number, isTyping: boolean): Promise<void> {
     try {
@@ -1551,21 +1747,6 @@ class WebSocketService {
       // Set user online when connected
       await this.updateOnlineStatus(true);
       
-      // Subscribe to global presence
-      this.subscribeToGlobalPresence();
-      
-      // Subscribe to matches presence
-      this.subscribeToMatchesPresence();
-
-      // Set up presence heartbeat (every 30 seconds)
-      const presenceHeartbeat = setInterval(async () => {
-        if (this.isConnected()) {
-          await this.sendPresenceHeartbeat();
-        } else {
-          clearInterval(presenceHeartbeat);
-        }
-      }, 30000);
-
       console.log('Presence system initialized');
     } catch (error) {
       console.error('Error initializing presence system:', error);

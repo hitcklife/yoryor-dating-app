@@ -231,7 +231,7 @@ const LikeItem = ({ item, onLike, onDislike, expanded, onToggleExpand, isMatch =
                 color="#6B7280"
                 size="sm"
               >
-                {user.profile.city || "Unknown location"}
+                {user.profile.city ? `${user.profile.city}${user.profile.state ? `, ${user.profile.state}` : ''}${user.profile.country ? (typeof user.profile.country === 'object' && user.profile.country.name ? `, ${user.profile.country.name}` : typeof user.profile.country === 'string' ? `, ${user.profile.country}` : '') : ''}` : "Unknown location"}
               </Text>
             </VStack>
 

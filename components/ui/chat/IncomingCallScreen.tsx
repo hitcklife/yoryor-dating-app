@@ -20,6 +20,7 @@ import {
   Center,
   Pressable,
 } from '@gluestack-ui/themed';
+import { ProfileImage } from '@/components/ui/CachedImage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { callService } from '@/services/call-service';
 
@@ -206,9 +207,12 @@ const IncomingCallScreen: React.FC<IncomingCallScreenProps> = ({
                   },
                 ]}
               >
-                <Avatar size="2xl" style={styles.avatar}>
-                  <AvatarImage source={{ uri: callerAvatar }} />
-                </Avatar>
+                <ProfileImage
+                  uri={callerAvatar}
+                  size={80}
+                  userId={call.caller.id}
+                  fallbackUri="https://via.placeholder.com/80"
+                />
                 
                 {/* Call Type Icon */}
                 <Box

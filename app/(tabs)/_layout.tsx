@@ -80,7 +80,7 @@ function TabBarIcon(props: {
 }
 
 export default function TabLayout() {
-  const { isAuthenticated, isRegistrationCompleted, isLoading, getLocalNotificationCounts, user, stats, fetchHomeStats } = useAuth();
+  const { isAuthenticated, isRegistrationCompleted, isProfileSetupCompleted, isLoading, getLocalNotificationCounts, user, stats, fetchHomeStats } = useAuth();
   const colorScheme = useColorScheme();
   const router = useRouter();
   const [notificationCounts, setNotificationCounts] = useState({ unread_messages_count: 0, new_likes_count: 0 });
@@ -89,7 +89,7 @@ export default function TabLayout() {
   // Initialize and fetch home stats once when user enters tabs
   useEffect(() => {
     const initializeTabs = async () => {
-      if (isAuthenticated && isRegistrationCompleted && !hasInitializedRef.current) {
+      if (isAuthenticated && isRegistrationCompleted && isProfileSetupCompleted && !hasInitializedRef.current) {
         try {
           console.log('Initializing tabs - fetching home stats once');
           hasInitializedRef.current = true; // Set this first to prevent multiple calls
@@ -102,12 +102,12 @@ export default function TabLayout() {
     };
 
     initializeTabs();
-  }, [isAuthenticated, isRegistrationCompleted, fetchHomeStats]);
+  }, [isAuthenticated, isRegistrationCompleted, isProfileSetupCompleted, fetchHomeStats]);
 
   // Fetch notification counts from database and also use stats from auth context
   useEffect(() => {
     const fetchNotificationCounts = async () => {
-      if (isAuthenticated && isRegistrationCompleted) {
+      if (isAuthenticated && isRegistrationCompleted && isProfileSetupCompleted) {
         try {
           const counts = await getLocalNotificationCounts();
           setNotificationCounts(counts);
@@ -118,7 +118,7 @@ export default function TabLayout() {
     };
 
     fetchNotificationCounts();
-  }, [isAuthenticated, isRegistrationCompleted, getLocalNotificationCounts, user?.id]);
+  }, [isAuthenticated, isRegistrationCompleted, isProfileSetupCompleted, getLocalNotificationCounts, user?.id]);
 
   // Update notification counts when stats change (from API)
   useEffect(() => {
@@ -142,9 +142,11 @@ export default function TabLayout() {
         router.replace("/login");
       } else if (!isRegistrationCompleted) {
         router.replace("/registration");
+      } else if (!isProfileSetupCompleted) {
+        router.replace("/profile-setup");
       }
     }
-  }, [isAuthenticated, isRegistrationCompleted, isLoading]);
+  }, [isAuthenticated, isRegistrationCompleted, isProfileSetupCompleted, isLoading]);
 
   // Show loading spinner while checking authentication
   if (isLoading) {
@@ -158,8 +160,8 @@ export default function TabLayout() {
     );
   }
 
-  // Don't render tabs if not authenticated or registration not completed
-  if (!isAuthenticated || !isRegistrationCompleted) return null;
+  // Don't render tabs if not authenticated, registration not completed, or profile setup not completed
+  if (!isAuthenticated || !isRegistrationCompleted || !isProfileSetupCompleted) return null;
 
   return (
     <Tabs

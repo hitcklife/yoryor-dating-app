@@ -1,10 +1,11 @@
 import React, { useState, useCallback } from "react";
-import { Pressable, Modal, Dimensions, Alert } from "react-native";
-import { Box, Text, HStack, VStack, Image, Avatar, AvatarImage, Badge, BadgeText } from "@gluestack-ui/themed";
+import { Pressable, Modal, Dimensions, Alert, Image } from "react-native";
+import { Box, Text, HStack, VStack, Avatar, AvatarImage, Badge, BadgeText } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
 import { Message } from "@/services/chats-service";
 import { getMessageReadStatus } from '@/services/chats-service';
 import CallMessageItem from './CallMessageItem';
+import { ChatMediaImage } from "@/components/ui/CachedImage";
 
 interface MessageItemProps {
   message: Message;
@@ -58,6 +59,19 @@ const MessageItem: React.FC<MessageItemProps> = ({
   const isCallMessage = message.message_type === 'call';
   const canEdit = isMe && message.message_type === 'text' && !message.deleted_at;
   const canDelete = isMe && message.deleted_at === null;
+
+  // Debug message types
+  if (message.message_type) {
+    console.log('Message type detected:', {
+      messageId: message.id,
+      messageType: message.message_type,
+      isImageMessage,
+      isVideoMessage,
+      isVoiceMessage,
+      hasMediaUrl: !!message.media_url,
+      mediaUrl: message.media_url
+    });
+  }
   
   const [showFullImage, setShowFullImage] = useState(false);
   const [showContextMenu, setShowContextMenu] = useState(false);
@@ -194,20 +208,77 @@ const MessageItem: React.FC<MessageItemProps> = ({
     }
 
     if (isImageMessage && message.media_url) {
+      console.log('Rendering image message:', {
+        messageId: message.id,
+        mediaUrl: message.media_url,
+        chatId: message.chat_id,
+        messageType: message.message_type
+      });
+      
+      return (
+        <VStack space="sm">
+          <Pressable onPress={() => setShowFullImage(true)}>
+            <Box borderRadius="$lg" overflow="hidden">
+              {/* Use regular Image for now to test */}
+              <Image
+                source={{ uri: message.media_url }}
+                style={{
+                  width: 200,
+                  height: 150,
+                  borderRadius: 8,
+                }}
+                resizeMode="cover"
+                onError={(error) => {
+                  console.error('Image error:', error);
+                }}
+                onLoad={() => {
+                  console.log('Image loaded successfully');
+                }}
+              />
+            </Box>
+          </Pressable>
+          {message.content && message.content !== `Sent a image` && (
+            <Text
+              color={isMe ? "#FFFFFF" : "#1F2937"}
+              fontSize="$md"
+            >
+              {message.content}
+            </Text>
+          )}
+        </VStack>
+      );
+    }
+
+    // Fallback for any message with media_url that might be an image
+    if (message.media_url && !isImageMessage && !isVideoMessage && !isVoiceMessage) {
+      console.log('Rendering fallback media message:', {
+        messageId: message.id,
+        mediaUrl: message.media_url,
+        messageType: message.message_type
+      });
+      
       return (
         <VStack space="sm">
           <Pressable onPress={() => setShowFullImage(true)}>
             <Box borderRadius="$lg" overflow="hidden">
               <Image
                 source={{ uri: message.media_url }}
-                alt="Message image"
-                width={200}
-                height={150}
+                style={{
+                  width: 200,
+                  height: 150,
+                  borderRadius: 8,
+                }}
                 resizeMode="cover"
+                onError={(error) => {
+                  console.error('Fallback Image error:', error);
+                }}
+                onLoad={() => {
+                  console.log('Fallback Image loaded successfully');
+                }}
               />
             </Box>
           </Pressable>
-          {message.content && message.content !== `Sent a image` && (
+          {message.content && (
             <Text
               color={isMe ? "#FFFFFF" : "#1F2937"}
               fontSize="$md"
@@ -395,10 +466,18 @@ const MessageItem: React.FC<MessageItemProps> = ({
             {isImageMessage && message.media_url && (
               <Image
                 source={{ uri: message.media_url }}
-                alt="Full size image"
-                width={Dimensions.get('window').width * 0.9}
-                height={Dimensions.get('window').height * 0.7}
+                style={{
+                  width: Dimensions.get('window').width * 0.9,
+                  height: Dimensions.get('window').height * 0.7,
+                  borderRadius: 8,
+                }}
                 resizeMode="contain"
+                onError={(error) => {
+                  console.error('Full screen image error:', error);
+                }}
+                onLoad={() => {
+                  console.log('Full screen image loaded successfully');
+                }}
               />
             )}
             {isVideoMessage && message.media_url && (

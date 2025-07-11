@@ -66,6 +66,37 @@ export default function ProfileViewScreen() {
   const interests = user?.profile?.interests || [];
   const profilePhotoUrl = getProfilePhotoUrl('medium'); // Use medium for main hero image
 
+  // Format location string based on available data
+  const formatLocation = (): string => {
+    const profile = user?.profile;
+    if (!profile) return '';
+
+    const parts = [];
+    
+    // Add city if available
+    if (profile.city) {
+      parts.push(profile.city);
+    }
+    
+    // Add state if available
+    if (profile.state) {
+      parts.push(profile.state);
+    }
+    
+    // Add country if available (handle both object and string formats)
+    if (profile.country) {
+      if (typeof profile.country === 'object' && profile.country.name) {
+        parts.push(profile.country.name);
+      } else if (typeof profile.country === 'string') {
+        parts.push(profile.country);
+      }
+    }
+    
+    return parts.join(', ');
+  };
+
+  const locationString = formatLocation();
+
   // Map common interests to emojis
   const getInterestEmoji = (interest: string) => {
     const emojiMap: {[key: string]: string} = {
@@ -249,7 +280,7 @@ export default function ProfileViewScreen() {
               <HStack alignItems="center" space="xs">
                 <Ionicons name="location" size={16} color="white" />
                 <Text color="$white" fontSize="$md" opacity={0.9}>
-                  {user?.profile?.city}{user?.profile?.state ? `, ${user?.profile?.state}` : ''}
+                  {locationString}
                 </Text>
               </HStack>
             </VStack>
@@ -308,7 +339,7 @@ export default function ProfileViewScreen() {
               <HStack justifyContent="space-between" alignItems="center">
                 <Text size="md" color="#718096" fontWeight="$medium">🌍 Location</Text>
                 <Text size="md" color="#2D3748" fontWeight="$semibold">
-                  {user?.profile?.city}{user?.profile?.state ? `, ${user?.profile?.state}` : ''}
+                  {locationString}
                 </Text>
               </HStack>
               <HStack justifyContent="space-between" alignItems="center">
