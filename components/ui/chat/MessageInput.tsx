@@ -49,30 +49,61 @@ const MessageInput: React.FC<MessageInputProps> = ({
   // Show recording preview (after recording, before sending)
   if (recordingState.showVoiceMessage && recordingState.recordedAudio) {
     return (
-      <Box p="$0" pb="$1" mt="-$8" bg="#FFFFFF" borderTopWidth={1} borderTopColor="#E5E7EB">
-        <HStack alignItems="center" justifyContent="space-between">
-          <HStack alignItems="center" space="sm">
-            <Pressable onPress={onPlayRecordedAudio}>
+      <Box
+        p="$2"
+        pb="$8"
+        bg="#FFFFFF"
+        borderTopWidth={1}
+        borderTopColor="#E5E7EB"
+      >
+        <HStack space="sm" alignItems="center">
+          {/* Play button */}
+          <Pressable onPress={onPlayRecordedAudio}>
+            <Box
+              p="$2"
+              bg="#F9FAFB"
+              borderRadius="$full"
+            >
               <Ionicons
                 name={isPlaying ? "pause-circle" : "play-circle"}
-                size={32}
+                size={24}
                 color="#8B5CF6"
               />
-            </Pressable>
-            <Text fontWeight="$bold">{formatDuration(recordingState.duration)}</Text>
-          </HStack>
-          <HStack space="md">
-            <Pressable onPress={onCancelRecording}>
-              <Ionicons name="close-circle" size={24} color="#EF4444" />
-            </Pressable>
-            <Pressable onPress={onSendVoiceMessage} disabled={isSending}>
+            </Box>
+          </Pressable>
+
+          {/* Duration display */}
+          <Box flex={1} bg="#F9FAFB" borderRadius="$2xl" px="$3" py="$2">
+            <Text fontWeight="$bold" color="#1F2937">
+              {formatDuration(recordingState.duration)}
+            </Text>
+          </Box>
+
+          {/* Cancel button */}
+          <Pressable onPress={onCancelRecording}>
+            <Box
+              p="$2"
+              bg="#FEE2E2"
+              borderRadius="$full"
+            >
+              <Ionicons name="close" size={24} color="#EF4444" />
+            </Box>
+          </Pressable>
+
+          {/* Send button */}
+          <Pressable onPress={onSendVoiceMessage} disabled={isSending}>
+            <Box
+              p="$2"
+              bg={isSending ? "#A78BFA" : "#8B5CF6"}
+              borderRadius="$full"
+            >
               <Ionicons
                 name="send"
                 size={24}
-                color={isSending ? "#A78BFA" : "#8B5CF6"}
+                color="#FFFFFF"
               />
-            </Pressable>
-          </HStack>
+            </Box>
+          </Pressable>
         </HStack>
       </Box>
     );
@@ -81,21 +112,56 @@ const MessageInput: React.FC<MessageInputProps> = ({
   // Show recording indicator while recording
   if (recordingState.isRecording) {
     return (
-      <Box p="$0" pb="$1" mt="-$8" bg="#FFFFFF" borderTopWidth={1} borderTopColor="#E5E7EB">
-        <HStack alignItems="center" justifyContent="center" space="sm">
-          {/* Stop button on the left */}
-          <Pressable onPress={onStopRecording} style={{ marginRight: 16 }}>
-            <Ionicons name="stop-circle" size={32} color="#EF4444" />
+      <Box
+        p="$2"
+        pb="$8"
+        bg="#FFFFFF"
+        borderTopWidth={1}
+        borderTopColor="#E5E7EB"
+      >
+        <HStack space="sm" alignItems="center">
+          {/* Stop button */}
+          <Pressable onPress={onStopRecording}>
+            <Box
+              p="$2"
+              bg="#FEE2E2"
+              borderRadius="$full"
+            >
+              <Ionicons name="stop" size={24} color="#EF4444" />
+            </Box>
           </Pressable>
+
+          {/* Recording indicator and duration */}
+          <Box flex={1} bg="#FEE2E2" borderRadius="$2xl" px="$3" py="$2">
+            <HStack space="sm" alignItems="center">
+              <Box
+                style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: "#EF4444" }}
+              />
+              <Text color="#EF4444" fontWeight="$bold">
+                Recording {formatDuration(recordingState.duration)}
+              </Text>
+            </HStack>
+          </Box>
+
+          {/* Cancel button */}
+          <Pressable onPress={onCancelRecording}>
+            <Box
+              p="$2"
+              bg="#F9FAFB"
+              borderRadius="$full"
+            >
+              <Ionicons name="close" size={24} color="#6B7280" />
+            </Box>
+          </Pressable>
+
+          {/* Placeholder for spacing */}
           <Box
-            style={{ width: 12, height: 12, borderRadius: 6, backgroundColor: "#EF4444", marginRight: 8 }}
-          />
-          <Text color="#EF4444" fontWeight="$bold">
-            Recording {formatDuration(recordingState.duration)}
-          </Text>
-          <Pressable onPress={onCancelRecording} style={{ marginLeft: 16 }}>
-            <Text color="#8B5CF6">Cancel</Text>
-          </Pressable>
+            p="$2"
+            bg="transparent"
+            borderRadius="$full"
+          >
+            <Box style={{ width: 24, height: 24 }} />
+          </Box>
         </HStack>
       </Box>
     );
@@ -106,7 +172,6 @@ const MessageInput: React.FC<MessageInputProps> = ({
     <Box
       p="$2"
       pb="$8"
-      mt="-$2"
       bg="#FFFFFF"
       borderTopWidth={1}
       borderTopColor="#E5E7EB"

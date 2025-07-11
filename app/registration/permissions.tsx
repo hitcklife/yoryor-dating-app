@@ -16,6 +16,13 @@ import {
 } from '@gluestack-ui/themed';
 import { Ionicons, MaterialIcons } from '@expo/vector-icons';
 import { Button } from '@/components/ui/button';
+import * as Notifications from 'expo-notifications';
+import * as Location from 'expo-location';
+import * as Device from 'expo-device';
+import { Platform } from 'react-native';
+import { apiClient } from '@/services/api-client';
+import { notificationService } from '@/services/notification-service';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function PermissionsScreen() {
   const router = useRouter();
@@ -28,13 +35,20 @@ export default function PermissionsScreen() {
     setIsLoading(true);
     
     try {
-      // TODO: Implement actual permission requests when packages are installed
-      // For now, just navigate to main app
+      const promises = [];
       
-      // Future implementation will include:
-      // - Push notification token collection
-      // - Location coordinates collection  
-      // - Sending data to backend endpoint
+      // Handle push notifications if enabled
+      if (pushNotifications) {
+        promises.push(handlePushNotifications());
+      }
+      
+      // Handle location if enabled
+      if (locationSharing) {
+        promises.push(handleLocationPermission());
+      }
+      
+      // Wait for all permission requests to complete
+      await Promise.allSettled(promises);
       
       router.replace('/(tabs)');
       
@@ -44,6 +58,122 @@ export default function PermissionsScreen() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handlePushNotifications = async () => {
+    try {
+      // Check if device supports push notifications
+      if (!Device.isDevice) {
+        console.log('Push notifications are not available on emulators/simulators');
+        return;
+      }
+
+      // Request permission
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+
+      if (finalStatus !== 'granted') {
+        console.log('Failed to get push token: permission not granted');
+        return;
+      }
+
+      // Get the token
+      const token = (await Notifications.getExpoPushTokenAsync({
+        projectId: '85d60026-9ea0-4740-a0ab-23a74ae5b590', // From your config
+      })).data;
+
+      console.log('Push token obtained:', token);
+
+      // Get device information
+      const deviceInfo = {
+        token: token,
+        deviceName: Device.deviceName || 'Unknown Device',
+        brand: Device.brand || 'Unknown Brand',
+        modelName: Device.modelName || 'Unknown Model',
+        osName: Device.osName || Platform.OS,
+        osVersion: Device.osVersion || 'Unknown OS Version',
+        deviceType: getDeviceType(),
+        isDevice: Device.isDevice,
+        manufacturer: Device.manufacturer || 'Unknown Manufacturer',
+      };
+
+      // Send to backend
+      await apiClient.deviceTokens.register(deviceInfo);
+      console.log('Device token registered with backend successfully');
+
+      // Store token locally
+      await AsyncStorage.setItem('expoPushToken', token);
+
+      // Configure for Android
+      if (Platform.OS === 'android') {
+        Notifications.setNotificationChannelAsync('chat-messages', {
+          name: 'Chat Messages',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#FF231F7C',
+        });
+      }
+
+    } catch (error) {
+      console.error('Error handling push notifications:', error);
+    }
+  };
+
+  const handleLocationPermission = async () => {
+    try {
+      // Request location permission
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      
+      if (status !== 'granted') {
+        console.log('Location permission not granted');
+        return;
+      }
+
+      // Get current location
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
+        timeInterval: 10000,
+        distanceInterval: 10,
+      });
+
+      console.log('Location obtained:', location);
+
+      // Send location to backend
+      await apiClient.location.updateLocation({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        accuracy: location.coords.accuracy || undefined,
+        altitude: location.coords.altitude || undefined,
+        heading: location.coords.heading || undefined,
+        speed: location.coords.speed || undefined,
+      });
+
+      console.log('Location sent to backend successfully');
+
+      // Store location locally
+      await AsyncStorage.setItem('userLocation', JSON.stringify({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        timestamp: Date.now(),
+      }));
+
+    } catch (error) {
+      console.error('Error handling location permission:', error);
+    }
+  };
+
+  const getDeviceType = () => {
+    if (Platform.OS === 'ios') {
+      return 'PHONE';
+    } else if (Platform.OS === 'android') {
+      return 'PHONE';
+    }
+    return 'UNKNOWN';
   };
 
   const handleSkip = () => {

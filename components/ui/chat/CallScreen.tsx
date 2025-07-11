@@ -26,6 +26,7 @@ import {
 } from '@gluestack-ui/themed';
 import { useColorScheme } from 'nativewind';
 import { videoSDKService } from '@/services/videosdk-service';
+import { CachedImage } from '@/components/ui/CachedImage';
 import {
   MeetingProvider,
   useMeeting,
@@ -420,11 +421,15 @@ const VideoCallMeeting: React.FC<{
         style={styles.fullScreenVideo}
       >
         <Center flex={1}>
-          <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-            <Avatar size="2xl" borderWidth={4} borderColor="$white">
-              <AvatarImage source={{ uri: userAvatar }} alt={displayName || userName} />
-            </Avatar>
-          </Animated.View>
+                      <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+              <CachedImage
+                source={{ uri: userAvatar }}
+                style={{ width: 80, height: 80, borderRadius: 40 }}
+                type="profile"
+                userId={chatId}
+                fallbackSource={{ uri: "https://via.placeholder.com/80" }}
+              />
+            </Animated.View>
           <VStack alignItems="center" mt="$6" space="md">
             <Text color="$white" fontSize="$2xl" fontWeight="$bold">
               {displayName || userName}
@@ -491,11 +496,15 @@ const VideoCallMeeting: React.FC<{
             style={styles.fullScreenVideo}
           >
             <Center flex={1}>
-              <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-                <Avatar size="2xl" borderWidth={4} borderColor="$white">
-                  <AvatarImage source={{ uri: userAvatar }} alt={userName} />
-                </Avatar>
-              </Animated.View>
+                          <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
+              <CachedImage
+                source={{ uri: userAvatar }}
+                style={{ width: 80, height: 80, borderRadius: 40 }}
+                type="profile"
+                userId={chatId}
+                fallbackSource={{ uri: "https://via.placeholder.com/80" }}
+              />
+            </Animated.View>
               <VStack alignItems="center" mt="$6" space="md">
                 <Text color="$white" fontSize="$2xl" fontWeight="$bold">
                   {userName}
@@ -568,9 +577,13 @@ const VideoCallMeeting: React.FC<{
         <Center flex={1}>
           <VStack alignItems="center" space="lg">
             <Animated.View style={{ transform: [{ scale: pulseAnim }] }}>
-              <Avatar size="2xl" borderWidth={6} borderColor="$white" style={styles.audioAvatar}>
-                <AvatarImage source={{ uri: userAvatar }} alt={userName} />
-              </Avatar>
+              <CachedImage
+                source={{ uri: userAvatar }}
+                style={{ width: 80, height: 80, borderRadius: 40 }}
+                type="profile"
+                userId={chatId}
+                fallbackSource={{ uri: "https://via.placeholder.com/80" }}
+              />
             </Animated.View>
 
             <VStack alignItems="center" space="md">
@@ -756,6 +769,8 @@ const CallScreen: React.FC<CallScreenProps> = ({
   const [meetingId, setMeetingId] = useState<string | null>(propMeetingId || null);
   const [token, setToken] = useState<string | null>(propToken || null);
   const [loading, setLoading] = useState(!propMeetingId || !propToken);
+  const [meetingConfig, setMeetingConfig] = useState<any>(null);
+  const [configLoading, setConfigLoading] = useState(false);
 
   useEffect(() => {
     // If meeting ID and token are provided via props, use them directly
@@ -773,7 +788,28 @@ const CallScreen: React.FC<CallScreenProps> = ({
     onEndCall();
   }, [chatId, propMeetingId, propToken, onEndCall]);
 
-  if (loading || !meetingId || !token) {
+  // Initialize meeting config when meetingId is available
+  useEffect(() => {
+    const initializeMeetingConfig = async () => {
+      if (!meetingId) return;
+      
+      try {
+        setConfigLoading(true);
+        const config = await videoSDKService.getMeetingConfig(meetingId, 'You');
+        setMeetingConfig(config);
+      } catch (error) {
+        console.error('Failed to initialize meeting config:', error);
+        Alert.alert('Call Error', 'Failed to initialize call. Please try again.');
+        onEndCall();
+      } finally {
+        setConfigLoading(false);
+      }
+    };
+
+    initializeMeetingConfig();
+  }, [meetingId, onEndCall]);
+
+  if (loading || !meetingId || !token || configLoading || !meetingConfig) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <Center flex={1}>
@@ -785,7 +821,7 @@ const CallScreen: React.FC<CallScreenProps> = ({
 
   return (
     <MeetingProvider
-      config={videoSDKService.getMeetingConfig(meetingId, 'You')}
+      config={meetingConfig}
       token={token}
     >
       <VideoCallMeeting

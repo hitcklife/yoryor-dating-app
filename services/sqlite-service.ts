@@ -2,13 +2,201 @@ import * as SQLite from 'expo-sqlite';
 import { Chat, Message, OtherUser, Profile, ProfilePhoto, UserPivot } from './chats-service';
 import * as FileSystem from 'expo-file-system';
 
+// Settings interfaces
+export interface UserSettings {
+  id?: number;
+  user_id: number;
+  
+  // Account Management
+  two_factor_enabled: boolean;
+  email_notifications_enabled: boolean;
+  marketing_emails_enabled: boolean;
+  
+  // Notification Settings
+  notify_matches: boolean;
+  notify_messages: boolean;
+  notify_likes: boolean;
+  notify_super_likes: boolean;
+  notify_visitors: boolean;
+  notify_new_features: boolean;
+  notify_marketing: boolean;
+  push_notifications_enabled: boolean;
+  in_app_sounds_enabled: boolean;
+  vibration_enabled: boolean;
+  quiet_hours_start?: string;
+  quiet_hours_end?: string;
+  
+  // Privacy Settings
+  profile_visible: boolean;
+  profile_visibility_level: 'everyone' | 'matches_only' | 'friends_only';
+  show_online_status: boolean;
+  show_distance: boolean;
+  show_age: boolean;
+  age_display_type: 'exact' | 'range' | 'hidden';
+  show_last_active: boolean;
+  allow_messages_from_matches: boolean;
+  allow_messages_from_all: boolean;
+  show_read_receipts: boolean;
+  prevent_screenshots: boolean;
+  hide_from_contacts: boolean;
+  incognito_mode: boolean;
+  
+  // Discovery Settings
+  show_me_on_discovery: boolean;
+  global_mode: boolean;
+  recently_active_only: boolean;
+  verified_profiles_only: boolean;
+  hide_already_seen_profiles: boolean;
+  smart_photos: boolean;
+  min_age: number;
+  max_age: number;
+  max_distance: number;
+  looking_for_preferences?: string[]; // JSON array
+  interest_preferences?: string[]; // JSON array
+  
+  // Data Privacy Settings
+  share_analytics_data: boolean;
+  share_location_data: boolean;
+  personalized_ads_enabled: boolean;
+  data_for_improvements: boolean;
+  share_with_partners: boolean;
+  
+  // Security Settings
+  photo_verification_enabled: boolean;
+  id_verification_enabled: boolean;
+  phone_verification_enabled: boolean;
+  social_media_verification_enabled: boolean;
+  login_alerts_enabled: boolean;
+  block_screenshots: boolean;
+  hide_from_facebook: boolean;
+  
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface BlockedUser {
+  id?: number;
+  blocker_id: number;
+  blocked_id: number;
+  blocked_user_name?: string;
+  blocked_user_age?: number;
+  blocked_user_photo_url?: string;
+  reason?: string;
+  created_at?: string;
+}
+
+export interface UserFeedback {
+  id?: number;
+  user_id?: number;
+  email?: string;
+  feedback_text: string;
+  category?: string;
+  status?: 'pending' | 'reviewed' | 'resolved';
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface UserReport {
+  id?: number;
+  reporter_id: number;
+  reported_id: number;
+  reported_user_name?: string;
+  reason: string;
+  description?: string;
+  evidence_urls?: string[];
+  status?: 'pending' | 'under_review' | 'resolved' | 'dismissed';
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface EmergencyContact {
+  id?: number;
+  user_id: number;
+  name: string;
+  phone: string;
+  relationship?: string;
+  is_primary?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DataExportRequest {
+  id?: number;
+  user_id: number;
+  status?: 'pending' | 'processing' | 'completed' | 'failed';
+  request_type?: string;
+  export_url?: string;
+  expires_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AccountDeletionRequest {
+  id?: number;
+  user_id: number;
+  reason?: string;
+  scheduled_deletion_date?: string;
+  status?: 'pending' | 'scheduled' | 'completed' | 'cancelled';
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface PasswordChangeHistory {
+  id?: number;
+  user_id: number;
+  change_type?: string;
+  ip_address?: string;
+  user_agent?: string;
+  created_at?: string;
+}
+
+export interface EmailChangeRequest {
+  id?: number;
+  user_id: number;
+  old_email: string;
+  new_email: string;
+  verification_token?: string;
+  status?: 'pending' | 'verified' | 'expired' | 'cancelled';
+  expires_at?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface UserVerificationStatus {
+  id?: number;
+  user_id: number;
+  photo_verification_status?: 'not_started' | 'pending' | 'approved' | 'rejected';
+  id_verification_status?: 'not_started' | 'pending' | 'approved' | 'rejected';
+  phone_verification_status?: 'not_started' | 'pending' | 'approved' | 'rejected';
+  social_media_verification_status?: 'not_started' | 'pending' | 'approved' | 'rejected';
+  photo_verification_date?: string;
+  id_verification_date?: string;
+  phone_verification_date?: string;
+  social_media_verification_date?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface SupportTicket {
+  id?: number;
+  user_id: number;
+  subject: string;
+  description: string;
+  category?: string;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  status?: 'open' | 'in_progress' | 'resolved' | 'closed';
+  assigned_to?: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 /**
  * SQLite Database Service for chat data
  * This service provides methods for storing and retrieving chat data locally
  */
 class SQLiteService {
   private db: SQLite.SQLiteDatabase | null = null;
-  private dbVersion = 3; // Updated to version 3 to include notification counts table
+  private dbVersion = 4; // Updated to version 4 to include all settings tables
   private isInitialized: boolean = false;
   private lastError: Error | null = null;
 
@@ -220,6 +408,232 @@ class SQLiteService {
           )
         `);
 
+        // User settings table - Main settings for all user preferences
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS user_settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            
+            -- Account Management
+            two_factor_enabled INTEGER DEFAULT 0,
+            email_notifications_enabled INTEGER DEFAULT 1,
+            marketing_emails_enabled INTEGER DEFAULT 0,
+            
+            -- Notification Settings
+            notify_matches INTEGER DEFAULT 1,
+            notify_messages INTEGER DEFAULT 1,
+            notify_likes INTEGER DEFAULT 1,
+            notify_super_likes INTEGER DEFAULT 1,
+            notify_visitors INTEGER DEFAULT 0,
+            notify_new_features INTEGER DEFAULT 1,
+            notify_marketing INTEGER DEFAULT 0,
+            push_notifications_enabled INTEGER DEFAULT 1,
+            in_app_sounds_enabled INTEGER DEFAULT 1,
+            vibration_enabled INTEGER DEFAULT 1,
+            quiet_hours_start TEXT,
+            quiet_hours_end TEXT,
+            
+            -- Privacy Settings
+            profile_visible INTEGER DEFAULT 1,
+            profile_visibility_level TEXT DEFAULT 'everyone',
+            show_online_status INTEGER DEFAULT 1,
+            show_distance INTEGER DEFAULT 1,
+            show_age INTEGER DEFAULT 1,
+            age_display_type TEXT DEFAULT 'exact',
+            show_last_active INTEGER DEFAULT 0,
+            allow_messages_from_matches INTEGER DEFAULT 1,
+            allow_messages_from_all INTEGER DEFAULT 0,
+            show_read_receipts INTEGER DEFAULT 1,
+            prevent_screenshots INTEGER DEFAULT 0,
+            hide_from_contacts INTEGER DEFAULT 0,
+            incognito_mode INTEGER DEFAULT 0,
+            
+            -- Discovery Settings
+            show_me_on_discovery INTEGER DEFAULT 1,
+            global_mode INTEGER DEFAULT 0,
+            recently_active_only INTEGER DEFAULT 1,
+            verified_profiles_only INTEGER DEFAULT 0,
+            hide_already_seen_profiles INTEGER DEFAULT 1,
+            smart_photos INTEGER DEFAULT 1,
+            min_age INTEGER DEFAULT 18,
+            max_age INTEGER DEFAULT 35,
+            max_distance INTEGER DEFAULT 25,
+            looking_for_preferences TEXT,
+            interest_preferences TEXT,
+            
+            -- Data Privacy Settings
+            share_analytics_data INTEGER DEFAULT 1,
+            share_location_data INTEGER DEFAULT 1,
+            personalized_ads_enabled INTEGER DEFAULT 1,
+            data_for_improvements INTEGER DEFAULT 1,
+            share_with_partners INTEGER DEFAULT 0,
+            
+            -- Security Settings
+            photo_verification_enabled INTEGER DEFAULT 0,
+            id_verification_enabled INTEGER DEFAULT 0,
+            phone_verification_enabled INTEGER DEFAULT 1,
+            social_media_verification_enabled INTEGER DEFAULT 0,
+            login_alerts_enabled INTEGER DEFAULT 1,
+            block_screenshots INTEGER DEFAULT 0,
+            hide_from_facebook INTEGER DEFAULT 1,
+            
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            
+            UNIQUE(user_id)
+          )
+        `);
+
+        // Blocked users table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS blocked_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            blocker_id INTEGER NOT NULL,
+            blocked_id INTEGER NOT NULL,
+            blocked_user_name TEXT,
+            blocked_user_age INTEGER,
+            blocked_user_photo_url TEXT,
+            reason TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            
+            UNIQUE(blocker_id, blocked_id)
+          )
+        `);
+
+        // User feedback table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS user_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            email TEXT,
+            feedback_text TEXT NOT NULL,
+            category TEXT DEFAULT 'general',
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+        // User reports table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS user_reports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reporter_id INTEGER NOT NULL,
+            reported_id INTEGER NOT NULL,
+            reported_user_name TEXT,
+            reason TEXT NOT NULL,
+            description TEXT,
+            evidence_urls TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+        // Emergency contacts table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS emergency_contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT NOT NULL,
+            relationship TEXT,
+            is_primary INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+        // Data export requests table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS data_export_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            status TEXT DEFAULT 'pending',
+            request_type TEXT DEFAULT 'full_export',
+            export_url TEXT,
+            expires_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+        // Account deletion requests table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS account_deletion_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            reason TEXT,
+            scheduled_deletion_date TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+        // Password change history table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS password_change_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            change_type TEXT DEFAULT 'password_change',
+            ip_address TEXT,
+            user_agent TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+        // Email change requests table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS email_change_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            old_email TEXT NOT NULL,
+            new_email TEXT NOT NULL,
+            verification_token TEXT,
+            status TEXT DEFAULT 'pending',
+            expires_at TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
+        // User verification status table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS user_verification_status (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            photo_verification_status TEXT DEFAULT 'not_started',
+            id_verification_status TEXT DEFAULT 'not_started',
+            phone_verification_status TEXT DEFAULT 'not_started',
+            social_media_verification_status TEXT DEFAULT 'not_started',
+            photo_verification_date TEXT,
+            id_verification_date TEXT,
+            phone_verification_date TEXT,
+            social_media_verification_date TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            
+            UNIQUE(user_id)
+          )
+        `);
+
+        // Support tickets table
+        await this.db!.execAsync(`
+          CREATE TABLE IF NOT EXISTS support_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            subject TEXT NOT NULL,
+            description TEXT NOT NULL,
+            category TEXT DEFAULT 'general',
+            priority TEXT DEFAULT 'medium',
+            status TEXT DEFAULT 'open',
+            assigned_to TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+          )
+        `);
+
         // Create indexes for better query performance
         await this.createIndexes();
 
@@ -238,42 +652,74 @@ class SQLiteService {
     if (!this.db) throw new Error('Database not initialized');
 
     try {
-      // Chat indexes
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_chats_last_activity ON chats (last_activity_at DESC)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_chats_deleted ON chats (deleted_at)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_chats_unread_count ON chats (unread_count DESC)');
-
-      // Message indexes for fast retrieval
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages (chat_id)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_sent_at ON messages (sent_at DESC)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_chat_sent ON messages (chat_id, sent_at DESC)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_deleted ON messages (deleted_at)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_reply_to ON messages (reply_to_message_id)');
+      console.log('Creating database indexes...');
       
-      // NEW: Critical message indexes for better performance
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages (sender_id)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_is_mine ON messages (is_mine)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_is_read ON messages (is_read)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_messages_type ON messages (message_type)');
-
-      // Other user indexes
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_other_users_chat_id ON other_users (chat_id)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_other_users_email ON other_users (email)');
-
+      // Chat indexes for faster lookups
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_chats_last_activity ON chats (last_activity_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chats_deleted ON chats (deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_chats_type ON chats (type);
+      `);
+      
+      // Message indexes for optimized queries
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages (chat_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_sent_at ON messages (sent_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_messages_chat_sent ON messages (chat_id, sent_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_messages_sender_id ON messages (sender_id);
+        CREATE INDEX IF NOT EXISTS idx_messages_deleted ON messages (deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_messages_is_read ON messages (is_read);
+        CREATE INDEX IF NOT EXISTS idx_messages_status ON messages (status);
+      `);
+      
+      // Other_users indexes
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_other_users_chat_id ON other_users (chat_id);
+      `);
+      
       // Profile indexes
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles (user_id)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profiles_gender ON profiles (gender)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profiles_looking_for ON profiles (looking_for)');
-
-      // Profile photo indexes
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profile_photos_user_id ON profile_photos (user_id)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profile_photos_is_profile ON profile_photos (is_profile_photo)');
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_profile_photos_order ON profile_photos (order_num)');
-
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_profiles_user_id ON profiles (user_id);
+      `);
+      
+      // Profile photos indexes
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_profile_photos_user_id ON profile_photos (user_id);
+        CREATE INDEX IF NOT EXISTS idx_profile_photos_is_profile ON profile_photos (is_profile_photo);
+      `);
+      
       // Notification counts indexes
-      await this.db.execAsync('CREATE INDEX IF NOT EXISTS idx_notification_counts_user_id ON notification_counts (user_id)');
-
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_notification_counts_user_id ON notification_counts (user_id);
+      `);
+      
+      // Settings tables indexes
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings (user_id);
+        CREATE INDEX IF NOT EXISTS idx_blocked_users_blocker_id ON blocked_users (blocker_id);
+        CREATE INDEX IF NOT EXISTS idx_blocked_users_blocked_id ON blocked_users (blocked_id);
+        CREATE INDEX IF NOT EXISTS idx_user_feedback_user_id ON user_feedback (user_id);
+        CREATE INDEX IF NOT EXISTS idx_user_feedback_status ON user_feedback (status);
+        CREATE INDEX IF NOT EXISTS idx_user_reports_reporter_id ON user_reports (reporter_id);
+        CREATE INDEX IF NOT EXISTS idx_user_reports_reported_id ON user_reports (reported_id);
+        CREATE INDEX IF NOT EXISTS idx_user_reports_status ON user_reports (status);
+        CREATE INDEX IF NOT EXISTS idx_emergency_contacts_user_id ON emergency_contacts (user_id);
+        CREATE INDEX IF NOT EXISTS idx_data_export_requests_user_id ON data_export_requests (user_id);
+        CREATE INDEX IF NOT EXISTS idx_data_export_requests_status ON data_export_requests (status);
+        CREATE INDEX IF NOT EXISTS idx_account_deletion_requests_user_id ON account_deletion_requests (user_id);
+        CREATE INDEX IF NOT EXISTS idx_password_change_history_user_id ON password_change_history (user_id);
+        CREATE INDEX IF NOT EXISTS idx_email_change_requests_user_id ON email_change_requests (user_id);
+        CREATE INDEX IF NOT EXISTS idx_user_verification_status_user_id ON user_verification_status (user_id);
+        CREATE INDEX IF NOT EXISTS idx_support_tickets_user_id ON support_tickets (user_id);
+        CREATE INDEX IF NOT EXISTS idx_support_tickets_status ON support_tickets (status);
+      `);
+      
+      // Composite indexes for complex queries
+      await this.db.execAsync(`
+        CREATE INDEX IF NOT EXISTS idx_messages_composite ON messages (chat_id, deleted_at, sent_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_chats_composite ON chats (deleted_at, last_activity_at DESC);
+      `);
+      
       console.log('Database indexes created successfully');
     } catch (error) {
       console.error('Error creating indexes:', error);
@@ -1867,6 +2313,27 @@ class SQLiteService {
     }
   }
 
+  /**
+   * Update a chat's last activity timestamp
+   * @param chatId The chat ID
+   */
+  async updateChatLastActivity(chatId: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.runAsync(`
+        UPDATE chats 
+        SET last_activity_at = datetime('now', 'utc'), updated_at = datetime('now', 'utc')
+        WHERE id = ?
+      `, [chatId]);
+      
+      console.log(`Updated last activity for chat ${chatId}`);
+    } catch (error) {
+      console.error('Error updating chat last activity:', error);
+      throw error;
+    }
+  }
+
   // Force database reset and migration
   async resetDatabase(): Promise<void> {
     try {
@@ -2447,6 +2914,762 @@ class SQLiteService {
       });
     } catch (error) {
       console.error('Error cleaning up old data:', error);
+    }
+  }
+
+  /**
+   * Update a message
+   */
+  async updateMessage(message: Message): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.runAsync(`
+        UPDATE messages 
+        SET content = ?, 
+            is_edited = ?, 
+            edited_at = ?, 
+            updated_at = ?
+        WHERE id = ?
+      `, [
+        message.content,
+        message.is_edited ? 1 : 0,
+        message.edited_at,
+        message.updated_at,
+        message.id
+      ]);
+      
+      console.log(`Message ${message.id} updated`);
+    } catch (error) {
+      console.error('Error updating message:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Mark a message as deleted (soft delete)
+   */
+  async markMessageAsDeleted(messageId: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.runAsync(`
+        UPDATE messages 
+        SET deleted_at = datetime('now', 'utc')
+        WHERE id = ?
+      `, [messageId]);
+      
+      console.log(`Message ${messageId} marked as deleted`);
+    } catch (error) {
+      console.error('Error marking message as deleted:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Mark messages as read
+   */
+  async markMessagesAsRead(messageIds: number[]): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+    if (messageIds.length === 0) return;
+
+    try {
+      const placeholders = messageIds.map(() => '?').join(',');
+      await this.db.runAsync(`
+        UPDATE messages 
+        SET is_read = 1, 
+            read_at = datetime('now', 'utc')
+        WHERE id IN (${placeholders})
+      `, messageIds);
+      
+      console.log(`${messageIds.length} messages marked as read`);
+    } catch (error) {
+      console.error('Error marking messages as read:', error);
+      throw error;
+    }
+  }
+
+  // ===== SETTINGS MANAGEMENT METHODS =====
+
+  /**
+   * Get user settings by user ID
+   */
+  async getUserSettings(userId: number): Promise<UserSettings | null> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const settings = await this.db.getFirstAsync<any>(`
+        SELECT * FROM user_settings WHERE user_id = ?
+      `, [userId]);
+
+      if (!settings) return null;
+
+      return {
+        ...settings,
+        // Convert INTEGER to boolean
+        two_factor_enabled: Boolean(settings.two_factor_enabled),
+        email_notifications_enabled: Boolean(settings.email_notifications_enabled),
+        marketing_emails_enabled: Boolean(settings.marketing_emails_enabled),
+        notify_matches: Boolean(settings.notify_matches),
+        notify_messages: Boolean(settings.notify_messages),
+        notify_likes: Boolean(settings.notify_likes),
+        notify_super_likes: Boolean(settings.notify_super_likes),
+        notify_visitors: Boolean(settings.notify_visitors),
+        notify_new_features: Boolean(settings.notify_new_features),
+        notify_marketing: Boolean(settings.notify_marketing),
+        push_notifications_enabled: Boolean(settings.push_notifications_enabled),
+        in_app_sounds_enabled: Boolean(settings.in_app_sounds_enabled),
+        vibration_enabled: Boolean(settings.vibration_enabled),
+        profile_visible: Boolean(settings.profile_visible),
+        show_online_status: Boolean(settings.show_online_status),
+        show_distance: Boolean(settings.show_distance),
+        show_age: Boolean(settings.show_age),
+        show_last_active: Boolean(settings.show_last_active),
+        allow_messages_from_matches: Boolean(settings.allow_messages_from_matches),
+        allow_messages_from_all: Boolean(settings.allow_messages_from_all),
+        show_read_receipts: Boolean(settings.show_read_receipts),
+        prevent_screenshots: Boolean(settings.prevent_screenshots),
+        hide_from_contacts: Boolean(settings.hide_from_contacts),
+        incognito_mode: Boolean(settings.incognito_mode),
+        show_me_on_discovery: Boolean(settings.show_me_on_discovery),
+        global_mode: Boolean(settings.global_mode),
+        recently_active_only: Boolean(settings.recently_active_only),
+        verified_profiles_only: Boolean(settings.verified_profiles_only),
+        hide_already_seen_profiles: Boolean(settings.hide_already_seen_profiles),
+        smart_photos: Boolean(settings.smart_photos),
+        share_analytics_data: Boolean(settings.share_analytics_data),
+        share_location_data: Boolean(settings.share_location_data),
+        personalized_ads_enabled: Boolean(settings.personalized_ads_enabled),
+        data_for_improvements: Boolean(settings.data_for_improvements),
+        share_with_partners: Boolean(settings.share_with_partners),
+        photo_verification_enabled: Boolean(settings.photo_verification_enabled),
+        id_verification_enabled: Boolean(settings.id_verification_enabled),
+        phone_verification_enabled: Boolean(settings.phone_verification_enabled),
+        social_media_verification_enabled: Boolean(settings.social_media_verification_enabled),
+        login_alerts_enabled: Boolean(settings.login_alerts_enabled),
+        block_screenshots: Boolean(settings.block_screenshots),
+        hide_from_facebook: Boolean(settings.hide_from_facebook),
+        // Parse JSON arrays
+        looking_for_preferences: settings.looking_for_preferences ? JSON.parse(settings.looking_for_preferences) : [],
+        interest_preferences: settings.interest_preferences ? JSON.parse(settings.interest_preferences) : [],
+      };
+    } catch (error) {
+      console.error('Error getting user settings:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Create or update user settings
+   */
+  async saveUserSettings(settings: UserSettings): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT OR REPLACE INTO user_settings (
+          user_id, two_factor_enabled, email_notifications_enabled, marketing_emails_enabled,
+          notify_matches, notify_messages, notify_likes, notify_super_likes, notify_visitors,
+          notify_new_features, notify_marketing, push_notifications_enabled, in_app_sounds_enabled,
+          vibration_enabled, quiet_hours_start, quiet_hours_end, profile_visible, profile_visibility_level,
+          show_online_status, show_distance, show_age, age_display_type, show_last_active,
+          allow_messages_from_matches, allow_messages_from_all, show_read_receipts, prevent_screenshots,
+          hide_from_contacts, incognito_mode, show_me_on_discovery, global_mode, recently_active_only,
+          verified_profiles_only, hide_already_seen_profiles, smart_photos, min_age, max_age,
+          max_distance, looking_for_preferences, interest_preferences, share_analytics_data,
+          share_location_data, personalized_ads_enabled, data_for_improvements, share_with_partners,
+          photo_verification_enabled, id_verification_enabled, phone_verification_enabled,
+          social_media_verification_enabled, login_alerts_enabled, block_screenshots, hide_from_facebook,
+          created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+      `, [
+        settings.user_id,
+        settings.two_factor_enabled ? 1 : 0,
+        settings.email_notifications_enabled ? 1 : 0,
+        settings.marketing_emails_enabled ? 1 : 0,
+        settings.notify_matches ? 1 : 0,
+        settings.notify_messages ? 1 : 0,
+        settings.notify_likes ? 1 : 0,
+        settings.notify_super_likes ? 1 : 0,
+        settings.notify_visitors ? 1 : 0,
+        settings.notify_new_features ? 1 : 0,
+        settings.notify_marketing ? 1 : 0,
+        settings.push_notifications_enabled ? 1 : 0,
+        settings.in_app_sounds_enabled ? 1 : 0,
+        settings.vibration_enabled ? 1 : 0,
+        settings.quiet_hours_start || null,
+        settings.quiet_hours_end || null,
+        settings.profile_visible ? 1 : 0,
+        settings.profile_visibility_level || 'everyone',
+        settings.show_online_status ? 1 : 0,
+        settings.show_distance ? 1 : 0,
+        settings.show_age ? 1 : 0,
+        settings.age_display_type || 'exact',
+        settings.show_last_active ? 1 : 0,
+        settings.allow_messages_from_matches ? 1 : 0,
+        settings.allow_messages_from_all ? 1 : 0,
+        settings.show_read_receipts ? 1 : 0,
+        settings.prevent_screenshots ? 1 : 0,
+        settings.hide_from_contacts ? 1 : 0,
+        settings.incognito_mode ? 1 : 0,
+        settings.show_me_on_discovery ? 1 : 0,
+        settings.global_mode ? 1 : 0,
+        settings.recently_active_only ? 1 : 0,
+        settings.verified_profiles_only ? 1 : 0,
+        settings.hide_already_seen_profiles ? 1 : 0,
+        settings.smart_photos ? 1 : 0,
+        settings.min_age || 18,
+        settings.max_age || 35,
+        settings.max_distance || 25,
+        settings.looking_for_preferences ? JSON.stringify(settings.looking_for_preferences) : null,
+        settings.interest_preferences ? JSON.stringify(settings.interest_preferences) : null,
+        settings.share_analytics_data ? 1 : 0,
+        settings.share_location_data ? 1 : 0,
+        settings.personalized_ads_enabled ? 1 : 0,
+        settings.data_for_improvements ? 1 : 0,
+        settings.share_with_partners ? 1 : 0,
+        settings.photo_verification_enabled ? 1 : 0,
+        settings.id_verification_enabled ? 1 : 0,
+        settings.phone_verification_enabled ? 1 : 0,
+        settings.social_media_verification_enabled ? 1 : 0,
+        settings.login_alerts_enabled ? 1 : 0,
+        settings.block_screenshots ? 1 : 0,
+        settings.hide_from_facebook ? 1 : 0,
+        settings.created_at || now,
+        now
+      ]);
+      
+      console.log(`User settings saved for user ${settings.user_id}`);
+    } catch (error) {
+      console.error('Error saving user settings:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get blocked users for a user
+   */
+  async getBlockedUsers(userId: number): Promise<BlockedUser[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const blockedUsers = await this.db.getAllAsync<BlockedUser>(`
+        SELECT * FROM blocked_users WHERE blocker_id = ? ORDER BY created_at DESC
+      `, [userId]);
+
+      return blockedUsers;
+    } catch (error) {
+      console.error('Error getting blocked users:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Block a user
+   */
+  async blockUser(blockedUser: BlockedUser): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT OR REPLACE INTO blocked_users (
+          blocker_id, blocked_id, blocked_user_name, blocked_user_age, 
+          blocked_user_photo_url, reason, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [
+        blockedUser.blocker_id,
+        blockedUser.blocked_id,
+        blockedUser.blocked_user_name || null,
+        blockedUser.blocked_user_age || null,
+        blockedUser.blocked_user_photo_url || null,
+        blockedUser.reason || null,
+        now
+      ]);
+      
+      console.log(`User ${blockedUser.blocked_id} blocked by ${blockedUser.blocker_id}`);
+    } catch (error) {
+      console.error('Error blocking user:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Unblock a user
+   */
+  async unblockUser(blockerId: number, blockedId: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.runAsync(`
+        DELETE FROM blocked_users WHERE blocker_id = ? AND blocked_id = ?
+      `, [blockerId, blockedId]);
+      
+      console.log(`User ${blockedId} unblocked by ${blockerId}`);
+    } catch (error) {
+      console.error('Error unblocking user:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if a user is blocked
+   */
+  async isUserBlocked(blockerId: number, blockedId: number): Promise<boolean> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const result = await this.db.getFirstAsync<{ count: number }>(`
+        SELECT COUNT(*) as count FROM blocked_users 
+        WHERE blocker_id = ? AND blocked_id = ?
+      `, [blockerId, blockedId]);
+
+      return (result?.count || 0) > 0;
+    } catch (error) {
+      console.error('Error checking if user is blocked:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Save user feedback
+   */
+  async saveUserFeedback(feedback: UserFeedback): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT INTO user_feedback (
+          user_id, email, feedback_text, category, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [
+        feedback.user_id || null,
+        feedback.email || null,
+        feedback.feedback_text,
+        feedback.category || 'general',
+        feedback.status || 'pending',
+        now,
+        now
+      ]);
+      
+      console.log('User feedback saved');
+    } catch (error) {
+      console.error('Error saving user feedback:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get user feedback
+   */
+  async getUserFeedback(userId?: number): Promise<UserFeedback[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      let query = 'SELECT * FROM user_feedback';
+      let params: any[] = [];
+
+      if (userId) {
+        query += ' WHERE user_id = ?';
+        params.push(userId);
+      }
+
+      query += ' ORDER BY created_at DESC';
+
+      const feedback = await this.db.getAllAsync<UserFeedback>(query, params);
+      return feedback;
+    } catch (error) {
+      console.error('Error getting user feedback:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Save user report
+   */
+  async saveUserReport(report: UserReport): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT INTO user_reports (
+          reporter_id, reported_id, reported_user_name, reason, description, 
+          evidence_urls, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        report.reporter_id,
+        report.reported_id,
+        report.reported_user_name || null,
+        report.reason,
+        report.description || null,
+        report.evidence_urls ? JSON.stringify(report.evidence_urls) : null,
+        report.status || 'pending',
+        now,
+        now
+      ]);
+      
+      console.log(`User report saved: ${report.reporter_id} reported ${report.reported_id}`);
+    } catch (error) {
+      console.error('Error saving user report:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get user reports
+   */
+  async getUserReports(userId?: number): Promise<UserReport[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      let query = 'SELECT * FROM user_reports';
+      let params: any[] = [];
+
+      if (userId) {
+        query += ' WHERE reporter_id = ?';
+        params.push(userId);
+      }
+
+      query += ' ORDER BY created_at DESC';
+
+      const reports = await this.db.getAllAsync<any>(query, params);
+      
+      return reports.map(report => ({
+        ...report,
+        evidence_urls: report.evidence_urls ? JSON.parse(report.evidence_urls) : []
+      }));
+    } catch (error) {
+      console.error('Error getting user reports:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Save emergency contact
+   */
+  async saveEmergencyContact(contact: EmergencyContact): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT OR REPLACE INTO emergency_contacts (
+          id, user_id, name, phone, relationship, is_primary, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        contact.id || null,
+        contact.user_id,
+        contact.name,
+        contact.phone,
+        contact.relationship || null,
+        contact.is_primary ? 1 : 0,
+        contact.created_at || now,
+        now
+      ]);
+      
+      console.log(`Emergency contact saved for user ${contact.user_id}`);
+    } catch (error) {
+      console.error('Error saving emergency contact:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get emergency contacts for a user
+   */
+  async getEmergencyContacts(userId: number): Promise<EmergencyContact[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const contacts = await this.db.getAllAsync<any>(`
+        SELECT * FROM emergency_contacts WHERE user_id = ? ORDER BY is_primary DESC, created_at ASC
+      `, [userId]);
+
+      return contacts.map(contact => ({
+        ...contact,
+        is_primary: Boolean(contact.is_primary)
+      }));
+    } catch (error) {
+      console.error('Error getting emergency contacts:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Delete emergency contact
+   */
+  async deleteEmergencyContact(contactId: number): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      await this.db.runAsync(`
+        DELETE FROM emergency_contacts WHERE id = ?
+      `, [contactId]);
+      
+      console.log(`Emergency contact ${contactId} deleted`);
+    } catch (error) {
+      console.error('Error deleting emergency contact:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Save data export request
+   */
+  async saveDataExportRequest(request: DataExportRequest): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT INTO data_export_requests (
+          user_id, status, request_type, export_url, expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [
+        request.user_id,
+        request.status || 'pending',
+        request.request_type || 'full_export',
+        request.export_url || null,
+        request.expires_at || null,
+        now,
+        now
+      ]);
+      
+      console.log(`Data export request saved for user ${request.user_id}`);
+    } catch (error) {
+      console.error('Error saving data export request:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get data export requests for a user
+   */
+  async getDataExportRequests(userId: number): Promise<DataExportRequest[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const requests = await this.db.getAllAsync<DataExportRequest>(`
+        SELECT * FROM data_export_requests WHERE user_id = ? ORDER BY created_at DESC
+      `, [userId]);
+
+      return requests;
+    } catch (error) {
+      console.error('Error getting data export requests:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Save account deletion request
+   */
+  async saveAccountDeletionRequest(request: AccountDeletionRequest): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT INTO account_deletion_requests (
+          user_id, reason, scheduled_deletion_date, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `, [
+        request.user_id,
+        request.reason || null,
+        request.scheduled_deletion_date || null,
+        request.status || 'pending',
+        now,
+        now
+      ]);
+      
+      console.log(`Account deletion request saved for user ${request.user_id}`);
+    } catch (error) {
+      console.error('Error saving account deletion request:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get user verification status
+   */
+  async getUserVerificationStatus(userId: number): Promise<UserVerificationStatus | null> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const status = await this.db.getFirstAsync<UserVerificationStatus>(`
+        SELECT * FROM user_verification_status WHERE user_id = ?
+      `, [userId]);
+
+      return status || null;
+    } catch (error) {
+      console.error('Error getting user verification status:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Save user verification status
+   */
+  async saveUserVerificationStatus(status: UserVerificationStatus): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT OR REPLACE INTO user_verification_status (
+          user_id, photo_verification_status, id_verification_status, 
+          phone_verification_status, social_media_verification_status,
+          photo_verification_date, id_verification_date, phone_verification_date,
+          social_media_verification_date, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        status.user_id,
+        status.photo_verification_status || 'not_started',
+        status.id_verification_status || 'not_started',
+        status.phone_verification_status || 'not_started',
+        status.social_media_verification_status || 'not_started',
+        status.photo_verification_date || null,
+        status.id_verification_date || null,
+        status.phone_verification_date || null,
+        status.social_media_verification_date || null,
+        status.created_at || now,
+        now
+      ]);
+      
+      console.log(`User verification status saved for user ${status.user_id}`);
+    } catch (error) {
+      console.error('Error saving user verification status:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Save support ticket
+   */
+  async saveSupportTicket(ticket: SupportTicket): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT INTO support_tickets (
+          user_id, subject, description, category, priority, status, 
+          assigned_to, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        ticket.user_id,
+        ticket.subject,
+        ticket.description,
+        ticket.category || 'general',
+        ticket.priority || 'medium',
+        ticket.status || 'open',
+        ticket.assigned_to || null,
+        now,
+        now
+      ]);
+      
+      console.log(`Support ticket saved for user ${ticket.user_id}`);
+    } catch (error) {
+      console.error('Error saving support ticket:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get support tickets for a user
+   */
+  async getSupportTickets(userId: number): Promise<SupportTicket[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const tickets = await this.db.getAllAsync<SupportTicket>(`
+        SELECT * FROM support_tickets WHERE user_id = ? ORDER BY created_at DESC
+      `, [userId]);
+
+      return tickets;
+    } catch (error) {
+      console.error('Error getting support tickets:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Save password change history
+   */
+  async savePasswordChangeHistory(history: PasswordChangeHistory): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT INTO password_change_history (
+          user_id, change_type, ip_address, user_agent, created_at
+        ) VALUES (?, ?, ?, ?, ?)
+      `, [
+        history.user_id,
+        history.change_type || 'password_change',
+        history.ip_address || null,
+        history.user_agent || null,
+        now
+      ]);
+      
+      console.log(`Password change history saved for user ${history.user_id}`);
+    } catch (error) {
+      console.error('Error saving password change history:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Save email change request
+   */
+  async saveEmailChangeRequest(request: EmailChangeRequest): Promise<void> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const now = new Date().toISOString();
+      await this.db.runAsync(`
+        INSERT INTO email_change_requests (
+          user_id, old_email, new_email, verification_token, status, 
+          expires_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
+        request.user_id,
+        request.old_email,
+        request.new_email,
+        request.verification_token || null,
+        request.status || 'pending',
+        request.expires_at || null,
+        now,
+        now
+      ]);
+      
+      console.log(`Email change request saved for user ${request.user_id}`);
+    } catch (error) {
+      console.error('Error saving email change request:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get email change requests for a user
+   */
+  async getEmailChangeRequests(userId: number): Promise<EmailChangeRequest[]> {
+    if (!this.db) throw new Error('Database not initialized');
+
+    try {
+      const requests = await this.db.getAllAsync<EmailChangeRequest>(`
+        SELECT * FROM email_change_requests WHERE user_id = ? ORDER BY created_at DESC
+      `, [userId]);
+
+      return requests;
+    } catch (error) {
+      console.error('Error getting email change requests:', error);
+      return [];
     }
   }
 }

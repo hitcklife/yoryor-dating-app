@@ -18,7 +18,7 @@ import MatchModal from '@/components/ui/home/MatchModal';
 import { getUserProfilePhotoUrl, getMatchProfilePhotoUrl, getCurrentMatchDetails } from '@/components/ui/home/utils';
 
 export default function TabOneScreen() {
-  const { user, stats, fetchHomeStats, isAuthenticated, isRegistrationCompleted } = useAuth();
+  const { user, stats, isAuthenticated, isRegistrationCompleted } = useAuth();
   const [selectedPhoto, setSelectedPhoto] = useState<string | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [preferencesModalVisible, setPreferencesModalVisible] = useState(false);
@@ -197,8 +197,6 @@ export default function TabOneScreen() {
   useEffect(() => {
     if (isAuthenticated && isRegistrationCompleted) {
       fetchPotentialMatches();
-      // Fetch home stats separately to avoid dependency issues
-      fetchHomeStats();
       // Load user preferences
       loadUserPreferences();
     }

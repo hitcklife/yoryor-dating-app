@@ -282,7 +282,7 @@ const PhotoUploader = ({
       alignItems="center"
       justifyContent="center"
       width={isMain ? "100%" : "$24"}
-      height={isMain ? "$48" : "$24"}
+      height={isMain ? "$80" : "$24"}
       mb={isMain ? "$4" : "$0"}
       m={isMain ? "$0" : "$1"}
     >
@@ -310,11 +310,47 @@ const PhotoDisplay = ({
   onRemove: () => void;
   isPrivateProfile?: boolean;
 }) => {
+  const [imageError, setImageError] = useState(false);
+
+  if (imageError) {
+    return (
+      <Box
+        position="relative"
+        width={photo.isMain ? "100%" : "$24"}
+        height={photo.isMain ? "$80" : "$24"}
+        mb={photo.isMain ? "$4" : "$0"}
+        m={photo.isMain ? "$0" : "$1"}
+        bg="$backgroundLight200"
+        borderRadius="$lg"
+        alignItems="center"
+        justifyContent="center"
+      >
+        <VStack alignItems="center" space="sm">
+          <Ionicons name="image-outline" size={24} color="#8F3BBF" />
+          <Text color="$primary900" size="sm" textAlign="center">
+            Image Error
+          </Text>
+        </VStack>
+        <Pressable
+          position="absolute"
+          top="$2"
+          right="$2"
+          bg="$white"
+          borderRadius="$full"
+          p="$1"
+          onPress={onRemove}
+        >
+          <Icon as={CloseIcon} size="sm" color="$primary900" />
+        </Pressable>
+      </Box>
+    );
+  }
+
   return (
     <Box
       position="relative"
       width={photo.isMain ? "100%" : "$24"}
-      height={photo.isMain ? "$48" : "$24"}
+      height={photo.isMain ? "$80" : "$24"}
       mb={photo.isMain ? "$4" : "$0"}
       m={photo.isMain ? "$0" : "$1"}
     >
@@ -327,6 +363,10 @@ const PhotoDisplay = ({
         }}
         resizeMode="cover"
         blurRadius={isPrivateProfile ? 10 : 0}
+        onError={() => {
+          console.log('Image failed to load:', photo.uri);
+          setImageError(true);
+        }}
       />
       {isPrivateProfile && (
         <Box
@@ -393,6 +433,9 @@ export default function PhotosScreen() {
   const mainPhoto = photos.find(photo => photo.isMain);
   const extraPhotos = photos.filter(photo => !photo.isMain);
 
+  // Debug logging
+  console.log('Photos state:', photos.length, 'Extra photos:', extraPhotos.length, 'Private:', isPrivateProfile);
+
   const handleAddMainPhoto = () => {
     setIsSelectingMain(true);
     setIsSourceModalOpen(true);
@@ -431,17 +474,33 @@ export default function PhotosScreen() {
 
       if (!result.canceled && result.assets?.[0]) {
         const asset = result.assets[0];
+        
+        // Validate the image URI
+        if (!asset.uri) {
+          Alert.alert('Error', 'Invalid image selected. Please try another image.');
+          return;
+        }
+
         // Create file object from gallery selection
         const file = {
           uri: asset.uri,
           type: asset.type || 'image/jpeg',
           name: asset.fileName || `gallery_photo_${Date.now()}.jpg`
         };
+        
+        console.log('Selected image:', {
+          uri: asset.uri,
+          type: asset.type,
+          fileName: asset.fileName,
+          width: asset.width,
+          height: asset.height
+        });
+        
         handlePhotoSelected(asset.uri, file);
       }
     } catch (error) {
       console.error('Gallery selection error:', error);
-      Alert.alert('Error', 'Failed to select image from gallery');
+      Alert.alert('Error', 'Failed to select image from gallery. Please try a different image.');
     }
   };
 
@@ -506,24 +565,15 @@ export default function PhotosScreen() {
         contentContainerStyle={{ flexGrow: 1 }}
         keyboardShouldPersistTaps="handled"
       >
-        <Box flex={1} px="$6" py="$8">
+        <Box flex={1} px="$6" py="$2">
           <Text
             size="3xl"
             fontWeight="$bold"
-            mb="$6"
+            mb="$2"
             textAlign="center"
             color="$primary900"
           >
             UPLOAD YOUR PHOTOS
-          </Text>
-
-          <Text
-            size="md"
-            mb="$6"
-            textAlign="center"
-            color="$primary900"
-          >
-            ADD A MAIN PHOTO AND UP TO 5 ADDITIONAL PHOTOS
           </Text>
 
           {/* Private Profile Toggle */}
@@ -580,6 +630,7 @@ export default function PhotosScreen() {
 
             {mainPhoto ? (
               <PhotoDisplay
+                key={`${mainPhoto.uri}-${isPrivateProfile}`}
                 photo={mainPhoto}
                 onRemove={() => handleRemovePhoto(mainPhoto)}
                 isPrivateProfile={isPrivateProfile}
@@ -602,7 +653,7 @@ export default function PhotosScreen() {
             <HStack flexWrap="wrap">
               {extraPhotos.map((photo) => (
                 <PhotoDisplay
-                  key={photo.uri}
+                  key={`${photo.uri}-${isPrivateProfile}`}
                   photo={photo}
                   onRemove={() => handleRemovePhoto(photo)}
                   isPrivateProfile={isPrivateProfile}
@@ -621,18 +672,37 @@ export default function PhotosScreen() {
             </Text>
           ) : null}
 
-          <Button
-            onPress={handleContinue}
-            isDisabled={!mainPhoto}
-            mt="$4"
-            bg="$primary500"
-            $active-bg="$primary600"
-            $disabled-bg="$backgroundLight300"
-          >
-            <ButtonText>CONTINUE</ButtonText>
-          </Button>
+          {/* Spacer for scroll content */}
+          <Box h="$20" />
         </Box>
       </ScrollView>
+
+      {/* Fixed Continue Button */}
+      <Box
+        position="absolute"
+        bottom="$0"
+        left="$0"
+        right="$0"
+        bg="$primaryLight50"
+        px="$6"
+        py="$4"
+        borderTopWidth="$1"
+        borderTopColor="$borderLight200"
+        shadowColor="$shadowColor"
+        shadowOffset={{ width: 0, height: -2 }}
+        shadowOpacity={0.1}
+        shadowRadius={4}
+        elevation={5}
+      >
+        <Button
+          onPress={handleContinue}
+          isDisabled={!mainPhoto}
+          size="lg"
+          variant="solid"
+        >
+          <ButtonText>CONTINUE</ButtonText>
+        </Button>
+      </Box>
 
       <PhotoSourceModal
         isOpen={isSourceModalOpen}

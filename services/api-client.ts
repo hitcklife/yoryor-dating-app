@@ -651,7 +651,8 @@ class ApiClient {
                     const response = await this.client.post('/api/v1/auth/complete-registration', formData, {
                         headers: {
                             'Content-Type': 'multipart/form-data'
-                        }
+                        },
+                        timeout: 60000 // 60 seconds for photo uploads
                     });
 
                     console.log('🔍 Response:', response);
@@ -699,7 +700,9 @@ class ApiClient {
                     delete (jsonData as any).isPrivateProfile;
                 }
                 
-                return this.post('/api/v1/auth/complete-registration', jsonData);
+                return this.post('/api/v1/auth/complete-registration', jsonData, {
+                    timeout: 30000 // 30 seconds for JSON requests
+                });
             }
         },
 
@@ -727,48 +730,43 @@ class ApiClient {
      * Chat endpoints
      */
     public chats = {
-        getAll: async (page: number = 1, perPage: number = CONFIG.APP.defaultPageSize) => {
-            console.log(`Making API call to get chats: page=${page}, perPage=${perPage}`);
-            const response = await this.get(`/api/v1/chats?page=${page}&per_page=${perPage}`);
-            console.log('Chats API response:', response);
-            return response;
-        },
-
-        getById: async (chatId: number, page: number = 1, perPage: number = CONFIG.APP.chatMessagesPageSize) => {
-            console.log(`Making API call to get chat ${chatId}: page=${page}, perPage=${perPage}`);
-            const response = await this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
-            console.log(`Chat ${chatId} API response:`, response);
-            return response;
-        },
-
-        sendMessage: async (chatId: number, data: {
-            content: string;
-            message_type?: string;
-            media_url?: string;
-            media_data?: any;
-            reply_to_message_id?: number;
-        }) => {
-            console.log(`Making API call to send message to chat ${chatId}:`, data);
-            const response = await this.post(`/api/v1/chats/${chatId}/messages`, data);
-            console.log(`Send message response for chat ${chatId}:`, response);
-            return response;
-        },
-
-        sendVoiceMessage: async (chatId: number, formData: FormData) => {
-            console.log(`Making API call to send voice message to chat ${chatId}`);
-            const response = await this.post(`/api/v1/chats/${chatId}/messages`, formData, {
+        getAll: (page: number = 1, perPage: number = 10) =>
+            this.get(`/api/v1/chats?page=${page}&per_page=${perPage}`),
+        getById: (id: number, page: number = 1, perPage: number = 20) =>
+            this.get(`/api/v1/chats/${id}?page=${page}&per_page=${perPage}`),
+        create: (otherUserId: number) =>
+            this.post('/api/v1/chats/create', { other_user_id: otherUserId }),
+        sendMessage: (chatId: number, data: any) =>
+            this.post(`/api/v1/chats/${chatId}/messages`, data),
+        sendVoiceMessage: (chatId: number, formData: FormData) =>
+            this.post(`/api/v1/chats/${chatId}/messages`, formData, {
                 headers: { 'Content-Type': 'multipart/form-data' }
-            });
-            console.log(`Send voice message response for chat ${chatId}:`, response);
-            return response;
+            }),
+        editMessage: (chatId: number, messageId: number, content: string) =>
+            this.put(`/api/v1/chats/${chatId}/messages/${messageId}`, { content }),
+        deleteMessage: (chatId: number, messageId: number) =>
+            this.delete(`/api/v1/chats/${chatId}/messages/${messageId}`),
+        markMessagesAsRead: (chatId: number, messageIds?: number[]) => {
+            // If specific message IDs are provided, mark them individually
+            if (messageIds && messageIds.length > 0) {
+                // Mark multiple messages as read
+                return Promise.all(
+                    messageIds.map(messageId => 
+                        this.post(`/api/v1/chats/${chatId}/messages/${messageId}/read`)
+                    )
+                );
+            }
+            // Otherwise mark all messages in chat as read
+            return this.post(`/api/v1/chats/${chatId}/read`);
         },
-
-        loadMoreMessages: async (chatId: number, page: number, perPage: number = CONFIG.APP.chatMessagesPageSize) => {
-            console.log(`Making API call to load more messages for chat ${chatId}: page=${page}, perPage=${perPage}`);
-            const response = await this.get(`/api/v1/chats/${chatId}?page=${page}&per_page=${perPage}`);
-            console.log(`Load more messages response for chat ${chatId}:`, response);
-            return response;
-        },
+        getUnreadCount: () =>
+            this.get('/api/v1/chats/unread-count'),
+        deleteChat: (chatId: number) =>
+            this.delete(`/api/v1/chats/${chatId}`),
+        getCallMessages: (chatId: number) =>
+            this.get(`/api/v1/chats/${chatId}/call-messages`),
+        getCallStatistics: (chatId: number) =>
+            this.get(`/api/v1/chats/${chatId}/call-statistics`),
     };
 
     /**
@@ -822,6 +820,22 @@ class ApiClient {
             manufacturer?: string;
         }) => {
             return this.post('/api/v1/device-tokens', tokenData);
+        },
+    };
+
+    /**
+     * Location endpoints
+     */
+    public location = {
+        updateLocation: async (locationData: {
+            latitude: number;
+            longitude: number;
+            accuracy?: number;
+            altitude?: number;
+            heading?: number;
+            speed?: number;
+        }) => {
+            return this.post('/api/v1/location/update', locationData);
         },
     };
 
@@ -880,18 +894,33 @@ class ApiClient {
                 headers['Authorization'] = `Bearer ${this.authToken}`;
             }
 
-            const response = await fetch(url, {
-                method: 'POST',
-                headers,
-                body: photoData,
-            });
+            // Create AbortController for timeout
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 seconds timeout
 
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers,
+                    body: photoData,
+                    signal: controller.signal,
+                });
+
+                clearTimeout(timeoutId);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+                }
+
+                return response.json();
+            } catch (error: any) {
+                clearTimeout(timeoutId);
+                if (error.name === 'AbortError') {
+                    throw new Error('Upload timeout. Please try again.');
+                }
+                throw error;
             }
-
-            return response.json();
         },
 
         updatePhoto: async (photoId: number, data: {
@@ -930,6 +959,194 @@ class ApiClient {
     public countries = {
         getAll: async (): Promise<ApiResponse<any>> => {
             return this.get('/api/v1/countries');
+        }
+    };
+
+    /**
+     * Settings endpoints
+     */
+    public settings = {
+        get: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/settings');
+        },
+
+        update: async (settings: any): Promise<ApiResponse<any>> => {
+            return this.put('/api/v1/settings', settings);
+        },
+
+        getNotifications: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/settings/notifications');
+        },
+
+        updateNotifications: async (notifications: any): Promise<ApiResponse<any>> => {
+            return this.put('/api/v1/settings/notifications', notifications);
+        },
+
+        getPrivacy: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/settings/privacy');
+        },
+
+        updatePrivacy: async (privacy: any): Promise<ApiResponse<any>> => {
+            return this.put('/api/v1/settings/privacy', privacy);
+        },
+
+        getDiscovery: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/settings/discovery');
+        },
+
+        updateDiscovery: async (discovery: any): Promise<ApiResponse<any>> => {
+            return this.put('/api/v1/settings/discovery', discovery);
+        },
+
+        getSecurity: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/settings/security');
+        },
+
+        updateSecurity: async (security: any): Promise<ApiResponse<any>> => {
+            return this.put('/api/v1/settings/security', security);
+        }
+    };
+
+    /**
+     * Account management endpoints
+     */
+    public account = {
+        changePassword: async (passwordData: {
+            current_password: string;
+            new_password: string;
+            new_password_confirmation: string;
+        }): Promise<ApiResponse<any>> => {
+            return this.put('/api/v1/account/password', passwordData);
+        },
+
+        changeEmail: async (emailData: {
+            new_email: string;
+            password?: string;
+        }): Promise<ApiResponse<any>> => {
+            return this.put('/api/v1/account/email', emailData);
+        },
+
+        deleteAccount: async (reason?: string): Promise<ApiResponse<any>> => {
+            return this.delete('/api/v1/account', { data: { reason } });
+        },
+
+        exportData: async (): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/account/export-data');
+        }
+    };
+
+    /**
+     * Blocked users endpoints
+     */
+    public blockedUsers = {
+        getAll: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/blocked-users');
+        },
+
+        block: async (data: {
+            blocked_user_id: number;
+            reason?: string;
+        }): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/blocked-users', data);
+        },
+
+        unblock: async (blockedUserId: number): Promise<ApiResponse<any>> => {
+            return this.delete(`/api/v1/blocked-users/${blockedUserId}`);
+        }
+    };
+
+    /**
+     * Support endpoints
+     */
+    public support = {
+        submitFeedback: async (feedbackData: {
+            feedback_text: string;
+            category?: string;
+            email?: string;
+        }): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/support/feedback', feedbackData);
+        },
+
+        reportUser: async (reportData: {
+            reported_user_id: number;
+            reason: string;
+            description?: string;
+            evidence_urls?: string[];
+        }): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/support/report', reportData);
+        },
+
+        createTicket: async (ticketData: {
+            subject: string;
+            description: string;
+            category?: string;
+            priority?: string;
+        }): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/support/tickets', ticketData);
+        },
+
+        getTickets: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/support/tickets');
+        }
+    };
+
+    /**
+     * Emergency contacts endpoints
+     */
+    public emergencyContacts = {
+        getAll: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/emergency-contacts');
+        },
+
+        create: async (contactData: {
+            name: string;
+            phone: string;
+            relationship?: string;
+            is_primary?: boolean;
+        }): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/emergency-contacts', contactData);
+        },
+
+        update: async (contactId: number, contactData: {
+            name?: string;
+            phone?: string;
+            relationship?: string;
+            is_primary?: boolean;
+        }): Promise<ApiResponse<any>> => {
+            return this.put(`/api/v1/emergency-contacts/${contactId}`, contactData);
+        },
+
+        delete: async (contactId: number): Promise<ApiResponse<any>> => {
+            return this.delete(`/api/v1/emergency-contacts/${contactId}`);
+        }
+    };
+
+    /**
+     * Verification endpoints
+     */
+    public verification = {
+        getStatus: async (): Promise<ApiResponse<any>> => {
+            return this.get('/api/v1/verification/status');
+        },
+
+        startPhotoVerification: async (): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/verification/photo/start');
+        },
+
+        submitPhotoVerification: async (photos: FormData): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/verification/photo/submit', photos, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
+        },
+
+        startIdVerification: async (): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/verification/id/start');
+        },
+
+        submitIdVerification: async (idData: FormData): Promise<ApiResponse<any>> => {
+            return this.post('/api/v1/verification/id/submit', idData, {
+                headers: { 'Content-Type': 'multipart/form-data' }
+            });
         }
     };
 }

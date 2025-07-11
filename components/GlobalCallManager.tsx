@@ -48,10 +48,56 @@ const GlobalCallManager: React.FC<GlobalCallManagerProps> = ({ children }) => {
       onGlobalUnreadCountUpdate: () => {},
     });
 
+    // Set up event listeners for call events
+    webSocketService.on('user.call.initiated', handleCallInitiated);
+    
+    // Debug: Log WebSocket connection status
+    console.log('🔔 GlobalCallManager: WebSocket connected:', webSocketService.isConnected());
+    console.log('🔔 GlobalCallManager: WebSocket state:', webSocketService.getConnectionState());
+
     return () => {
       isMounted.current = false;
+      webSocketService.off('user.call.initiated', handleCallInitiated);
     };
   }, []);
+
+  const handleCallInitiated = async (callData: any) => {
+    if (!isMounted.current) return;
+
+    console.log('🔔 GlobalCallManager: Received call initiated:', callData);
+    
+    try {
+      // Extract call information from the new format
+      const call: IncomingCall = {
+        callId: callData.id,
+        meetingId: callData.channel_name, // Use channel_name as meetingId
+        token: '', // Token will be obtained when joining
+        type: callData.type === 'video' ? 'video' : 'voice',
+        caller: {
+          id: callData.caller.id,
+          name: callData.caller.email || 'Unknown Caller'
+        },
+        receiver: {
+          id: 0, // Will be set when joining
+          name: null
+        }
+      };
+
+      // Get caller information for display
+      const callerDisplayName = call.caller.name || 'Unknown Caller';
+      const callerPhotoUrl = callData.caller.profile_photo_path || 'https://via.placeholder.com/150';
+
+      if (isMounted.current) {
+        console.log('🔔 GlobalCallManager: Setting incoming call state from CallInitiated');
+        setIncomingCall(call);
+        setCallerName(callerDisplayName);
+        setCallerAvatar(callerPhotoUrl);
+        console.log('🔔 GlobalCallManager: Incoming call state set successfully');
+      }
+    } catch (error) {
+      console.error('Error handling call initiated:', error);
+    }
+  };
 
   const handleIncomingCall = async (callData: any) => {
     if (!isMounted.current) return;
@@ -156,6 +202,13 @@ const GlobalCallManager: React.FC<GlobalCallManagerProps> = ({ children }) => {
     try {
       console.log('Accepting call with join data:', joinData);
 
+      // If we don't have join data (from CallInitiated event), we need to join the call
+      if (!joinData || !joinData.token) {
+        console.log('No join data provided, joining call via API...');
+        const callJoinData = await callService.joinCall(incomingCall.callId);
+        joinData = callJoinData;
+      }
+
       // Set up the active call
       const callInfo = {
         callId: joinData.callId,
@@ -182,8 +235,9 @@ const GlobalCallManager: React.FC<GlobalCallManagerProps> = ({ children }) => {
     try {
       console.log('Rejecting call:', incomingCall.callId);
       
-      // The call service will handle the API call to reject
-      // Just clear the incoming call screen
+      // Reject the call via API
+      await callService.rejectCall(incomingCall.callId);
+      
       if (isMounted.current) {
         setIncomingCall(null);
       }

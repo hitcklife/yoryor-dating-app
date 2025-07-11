@@ -11,6 +11,7 @@ import { notificationService } from '@/services/notification-service';
 import { webSocketService } from '@/services/websocket-service';
 import { register } from '@videosdk.live/react-native-sdk';
 import GlobalCallManager from '@/components/GlobalCallManager';
+import { appInitializationService } from '@/services/app-initialization';
 
 import { useColorScheme } from '@/components/useColorScheme';
 import { GluestackUIProvider } from '@gluestack-ui/themed';
@@ -56,6 +57,13 @@ export default function RootLayout() {
   // Initialize services
   useEffect(() => {
     if (loaded) {
+      // Initialize app services
+      appInitializationService.initialize().then(() => {
+        console.log('App services initialized successfully');
+      }).catch(error => {
+        console.error('Error initializing app services:', error);
+      });
+
       // Initialize the notification service
       notificationService.initialize().then(token => {
         console.log('Notification service initialized with token:', token);
@@ -64,9 +72,10 @@ export default function RootLayout() {
       });
     }
 
-    // Clean up notification listeners when component unmounts
+    // Clean up services when component unmounts
     return () => {
       notificationService.cleanup();
+      appInitializationService.cleanup();
     };
   }, [loaded]);
 

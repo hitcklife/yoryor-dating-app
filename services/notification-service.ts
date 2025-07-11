@@ -8,11 +8,11 @@ import { CONFIG } from '@/services/config';
 // Configure how notifications appear when the app is in the foreground
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
+    shouldShowAlert: false, // Don't show alerts when app is in foreground
+    shouldPlaySound: false, // Don't play sound when app is in foreground
+    shouldSetBadge: true,   // Still update badge count
+    shouldShowBanner: false, // Don't show banner when app is in foreground
+    shouldShowList: false,   // Don't show in notification list when app is in foreground
   }),
 });
 

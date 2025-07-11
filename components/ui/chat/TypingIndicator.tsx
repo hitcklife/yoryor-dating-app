@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, Easing } from 'react-native';
 import { Box, HStack, Text, Avatar, AvatarImage } from '@gluestack-ui/themed';
+import { CachedImage } from '@/components/ui/CachedImage';
 
 interface TypingIndicatorProps {
     typingUser?: string | null;
@@ -67,12 +68,13 @@ export const TypingIndicator: React.FC<TypingIndicatorProps> = ({
         >
             <HStack space="sm" alignItems="center">
                 {userAvatar && (
-                    <Avatar size="xs">
-                        <AvatarImage
-                            source={{ uri: userAvatar }}
-                            alt="User avatar"
-                        />
-                    </Avatar>
+                    <CachedImage
+                        source={{ uri: userAvatar }}
+                        style={{ width: 24, height: 24, borderRadius: 12 }}
+                        type="profile"
+                        userId={0} // We don't have user ID in typing indicator
+                        fallbackSource={{ uri: "https://via.placeholder.com/24" }}
+                    />
                 )}
 
                 <Box
@@ -92,7 +94,7 @@ export const TypingIndicator: React.FC<TypingIndicatorProps> = ({
                 >
                     <HStack space="sm" alignItems="center">
                         {/* Animated typing dots */}
-                        <HStack space="1" alignItems="center" pr="$1">
+                        <HStack space="xs" alignItems="center" pr="$1">
                             <Animated.View
                                 style={{
                                     width: 6,

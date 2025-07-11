@@ -38,6 +38,11 @@ export interface Profile {
   state: string;
   province: string | null;
   country_id: number;
+  country?: {
+    id: number;
+    name: string;
+    code: string;
+  };
   latitude: number | null;
   longitude: number | null;
   bio: string;

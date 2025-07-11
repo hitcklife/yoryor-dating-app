@@ -16,13 +16,15 @@ import {
   InputField,
 } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
-import { chatsService, Chat, getProfilePhotoUrl, getMessageReadStatus, initializeChatsService } from "@/services/chats-service";
+import { chatsService, Chat, getProfilePhotoUrl, getMessageReadStatus, initializeChatsService, getCurrentUserId } from "@/services/chats-service";
 import { webSocketService } from "@/services/websocket-service";
 import { sqliteService } from "@/services/sqlite-service";
 import { apiClient } from "@/services/api-client";
 import { likesService, Match } from "@/services/likes-service";
 import { format, isToday, isYesterday } from "date-fns";
 import { ChatListShimmer } from "@/components/ui/shimmer";
+import { CachedImage } from "@/components/ui/CachedImage";
+import { ChatListTypingIndicator } from "@/components/ui/chat/ChatListTypingIndicator";
 
 // Helper function to get profile photo URL for match users
 const getMatchProfilePhotoUrl = (user: any): string | null => {
@@ -63,9 +65,10 @@ const formatTimestamp = (timestamp: string): string => {
 type ChatItemProps = {
   chat: Chat;
   onPress: (chatId: number) => void;
+  isTyping?: boolean;
 };
 
-const ChatItem = ({ chat, onPress }: ChatItemProps) => {
+const ChatItem = ({ chat, onPress, isTyping }: ChatItemProps) => {
   const profilePhotoUrl = getProfilePhotoUrl(chat.other_user);
   const userName = chat.other_user.profile ?
     `${chat.other_user.profile.first_name} ${chat.other_user.profile.last_name}` :
@@ -75,9 +78,11 @@ const ChatItem = ({ chat, onPress }: ChatItemProps) => {
     formatTimestamp(chat.last_message.created_at) :
     formatTimestamp(chat.last_activity_at);
 
-  const lastMessageContent = chat.last_message ?
-    chat.last_message.content :
-    "No messages yet";
+  const lastMessageContent = isTyping ? 
+    null : // Will be handled by typing indicator component
+    (chat.last_message ?
+      chat.last_message.content :
+      "No messages yet");
 
   // Check if last message is from current user and get read status
   const isLastMessageFromMe = chat.last_message?.is_mine;
@@ -109,13 +114,12 @@ const ChatItem = ({ chat, onPress }: ChatItemProps) => {
       <Box py="$3" px="$4">
         <HStack space="md" alignItems="flex-start">
           <Box position="relative">
-            <Image
+            <CachedImage
               source={{ uri: profilePhotoUrl || "https://via.placeholder.com/50" }}
-              style={{
-                width: 50,
-                height: 50,
-                borderRadius: 25,
-              }}
+              style={{ width: 50, height: 50, borderRadius: 25 }}
+              type="profile"
+              userId={chat.other_user.id}
+              fallbackSource={{ uri: "https://via.placeholder.com/50" }}
             />
             {chat.unread_count > 0 && (
               <Badge
@@ -158,15 +162,19 @@ const ChatItem = ({ chat, onPress }: ChatItemProps) => {
               </HStack>
             </HStack>
 
-            <Text
-              color="#6B7280"
-              size="sm"
-              numberOfLines={1}
-              ellipsizeMode="tail"
-              pr="$16"
-            >
-              {lastMessageContent}
-            </Text>
+            {isTyping ? (
+              <ChatListTypingIndicator />
+            ) : (
+              <Text
+                color="#6B7280"
+                size="sm"
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                pr="$16"
+              >
+                {lastMessageContent}
+              </Text>
+            )}
           </VStack>
         </HStack>
       </Box>
@@ -186,13 +194,12 @@ const MatchItem = ({ match, onPress }: { match: Match; onPress: (match: Match) =
       onPress={() => onPress(match)}
     >
       <Box position="relative">
-        <Image
+        <CachedImage
           source={{ uri: profilePhotoUrl || "https://via.placeholder.com/60" }}
-          style={{
-            width: 60,
-            height: 60,
-            borderRadius: 30,
-          }}
+          style={{ width: 60, height: 60, borderRadius: 30 }}
+          type="profile"
+          userId={match.user.id}
+          fallbackSource={{ uri: "https://via.placeholder.com/60" }}
         />
         {/* New match indicator */}
         <Box
@@ -235,6 +242,7 @@ export default function ChatsScreen() {
   const [isFetchingApi, setIsFetchingApi] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchActive, setIsSearchActive] = useState(false);
+  const [typingChats, setTypingChats] = useState<Map<number, { timestamp: number }>>(new Map());
   const isMounted = useRef(true);
   const hasInitialized = useRef(false);
 
@@ -249,7 +257,14 @@ export default function ChatsScreen() {
         const userName = chat.other_user.profile ?
           `${chat.other_user.profile.first_name} ${chat.other_user.profile.last_name}` :
           "User";
-        return userName.toLowerCase().includes(searchQuery.toLowerCase());
+        
+        // Search by user name
+        const nameMatches = userName.toLowerCase().includes(searchQuery.toLowerCase());
+        
+        // Search by last message content
+        const messageMatches = chat.last_message?.content?.toLowerCase().includes(searchQuery.toLowerCase()) || false;
+        
+        return nameMatches || messageMatches;
       });
       setFilteredChats(filtered);
     }
@@ -394,8 +409,9 @@ export default function ChatsScreen() {
         if (apiChats.length > 0 || hasLocal) {
           const mergedChats = mergeChatData(localChats, apiChats);
           setChats(mergedChats);
-        } else if (apiChats.length === 0 && !hasLocal) {
-          setError('No chats available');
+        } else {
+          // No chats available - this is normal, not an error
+          setChats([]);
         }
       }
 
@@ -416,6 +432,18 @@ export default function ChatsScreen() {
 
   // Subscribe to chat list updates for real-time updates
   useEffect(() => {
+    // Subscribe to all chat channels for typing events
+    const subscribeToChatTyping = async () => {
+      try {
+        // Subscribe to each chat channel to receive typing events
+        for (const chat of chats) {
+          webSocketService.subscribeToChat(chat.id);
+        }
+      } catch (error) {
+        console.error('Error subscribing to chat typing events:', error);
+      }
+    };
+
     // Subscribe to chat list updates
     webSocketService.subscribeToChatList({
       onNewMessage: async (chatId: number, message: any) => {
@@ -430,11 +458,17 @@ export default function ChatsScreen() {
         setChats(prevChats => {
           return prevChats.map(chat => {
             if (chat.id === chatId) {
+              // For own messages, don't increase unread count
+              // For others' messages, increase unread count
+              const newUnreadCount = message.is_mine ? 
+                chat.unread_count : // Keep current count for own messages
+                chat.unread_count + 1; // Increase for others' messages
+              
               return {
                 ...chat,
                 last_message: message,
                 last_activity_at: message.sent_at || message.created_at,
-                unread_count: chat.unread_count + (message.is_mine ? 0 : 1)
+                unread_count: newUnreadCount
               };
             }
             return chat;
@@ -468,6 +502,7 @@ export default function ChatsScreen() {
         setChats(prevChats => {
           return prevChats.map(chat => {
             if (chat.id === chatId) {
+              // Server unread count takes precedence over local calculation
               return { ...chat, unread_count: unreadCount };
             }
             return chat;
@@ -476,12 +511,170 @@ export default function ChatsScreen() {
       }
     });
 
+    // Handle typing indicators for chat list
+    const handleTypingIndicator = async (data: any) => {
+      if (!isMounted.current) return;
+      
+      console.log('Typing indicator received in chat list:', data);
+      
+      // Only show typing indicator for other users
+      const currentUserId = await getCurrentUserId();
+      if (data.user_id && data.user_id !== currentUserId) {
+        
+        setTypingChats(prev => {
+          const newMap = new Map(prev);
+          newMap.set(data.chat_id, {
+            timestamp: Date.now()
+          });
+          return newMap;
+        });
+        
+        // Auto-remove typing indicator after 3 seconds
+        setTimeout(() => {
+          if (isMounted.current) {
+            setTypingChats(prev => {
+              const newMap = new Map(prev);
+              newMap.delete(data.chat_id);
+              return newMap;
+            });
+          }
+        }, 3000);
+      }
+    };
+
+    // Listen for typing events
+    webSocketService.on('chat.typing', handleTypingIndicator);
+
+    // Listen for global unread count updates
+    const handleGlobalUnreadUpdate = (data: any) => {
+      if (!isMounted.current) return;
+      
+      console.log('Global unread count update:', data);
+      
+      // Update the global unread count (this could be used for tab badges)
+      // For now, we'll just log it, but you can add state management here
+      // if you want to show unread counts on tabs
+    };
+
+    // Listen for global unread updates
+    webSocketService.on('user.unread.update', handleGlobalUnreadUpdate);
+
+    // Handle own sent messages immediately
+    const handleOwnMessageSent = async (data: any) => {
+      if (!isMounted.current) return;
+      
+      console.log('Own message sent:', data);
+      
+      // Update chat list immediately with own message
+      setChats(prevChats => {
+        return prevChats.map(chat => {
+          if (chat.id === data.chatId) {
+            return {
+              ...chat,
+              last_message: data.message,
+              last_activity_at: data.message.sent_at || data.message.created_at,
+              // Don't change unread count for own messages
+              unread_count: chat.unread_count
+            };
+          }
+          return chat;
+        }).sort((a, b) => {
+          // Sort by last activity (most recent first)
+          const timeA = new Date(a.last_activity_at).getTime();
+          const timeB = new Date(b.last_activity_at).getTime();
+          return timeB - timeA;
+        });
+      });
+    };
+
+    // Listen for own message sent events
+    webSocketService.on('chat.own.message.sent', handleOwnMessageSent);
+
+    // Subscribe to typing events for all chats
+    subscribeToChatTyping();
+
+    // Listen for message edit and delete events to update chat list
+    const handleMessageEdited = async (editedMessage: any) => {
+      if (!isMounted.current) return;
+      
+      console.log(`Message edited in chat ${editedMessage.chat_id}:`, editedMessage);
+      
+      // Update the chat list to reflect the edited message
+      await chatsService.updateChatListWithMessageEdit(editedMessage);
+      
+      // Refresh the chat list
+      setChats(prevChats => {
+        return prevChats.map(chat => {
+          if (chat.id === editedMessage.chat_id) {
+            return {
+              ...chat,
+              last_message: editedMessage,
+              last_activity_at: editedMessage.updated_at || editedMessage.sent_at || editedMessage.created_at
+            };
+          }
+          return chat;
+        }).sort((a, b) => {
+          // Sort by last activity (most recent first)
+          const timeA = new Date(a.last_activity_at).getTime();
+          const timeB = new Date(b.last_activity_at).getTime();
+          return timeB - timeA;
+        });
+      });
+    };
+
+    const handleMessageDeleted = async (data: any) => {
+      if (!isMounted.current) return;
+      
+      console.log(`Message deleted in chat ${data.chatId}:`, data);
+      
+      // Update the chat list to reflect the deleted message
+      await chatsService.updateChatListWithMessageDelete(data.chatId, data.messageId);
+      
+      // Refresh the chat list
+      loadChatsOptimized();
+    };
+
+    // Add event listeners for message edit and delete
+    webSocketService.on('chat.message.edited', handleMessageEdited);
+    webSocketService.on('chat.message.deleted', handleMessageDeleted);
+
     // Cleanup function
     return () => {
       isMounted.current = false;
       webSocketService.unsubscribeFromChatList();
+      webSocketService.off('chat.message.edited', handleMessageEdited);
+      webSocketService.off('chat.message.deleted', handleMessageDeleted);
+      webSocketService.off('chat.typing', handleTypingIndicator);
+      webSocketService.off('user.unread.update', handleGlobalUnreadUpdate);
+      webSocketService.off('chat.own.message.sent', handleOwnMessageSent);
     };
   }, []);
+
+  // Subscribe to typing events when chats change - use a more stable approach
+  const prevChatIds = useRef<Set<number>>(new Set());
+  
+  useEffect(() => {
+    if (chats.length > 0) {
+      const currentChatIds = new Set(chats.map(chat => chat.id));
+      
+      // Subscribe to new chats
+      for (const chat of chats) {
+        if (!prevChatIds.current.has(chat.id)) {
+          webSocketService.subscribeToChat(chat.id);
+        }
+      }
+      
+      // Unsubscribe from removed chats
+      for (const chatId of prevChatIds.current) {
+        if (!currentChatIds.has(chatId)) {
+          webSocketService.unsubscribeFromChat(chatId);
+        }
+      }
+      
+      // Update the previous chat IDs
+      prevChatIds.current = currentChatIds;
+    }
+  }, [chats.length]); // Only depend on the length, not the entire array
 
   // Initialize and load data only once
   useEffect(() => {
@@ -495,6 +688,7 @@ export default function ChatsScreen() {
         
         // Fetch matches
         await fetchMatches();
+        
       } catch (error) {
         console.error('Error initializing chats:', error);
         setError('Failed to load chats. Please try again.');
@@ -589,7 +783,7 @@ export default function ChatsScreen() {
           />
           <Text color="#6B7280" mt="$2" textAlign="center">
             {searchQuery ? 
-              `No chats found for "${searchQuery}"` : 
+              `No chats found for "${searchQuery}" in names or messages` : 
               "No chats yet. Start a conversation with someone!"
             }
           </Text>
@@ -611,13 +805,17 @@ export default function ChatsScreen() {
         }
       >
         <VStack>
-          {filteredChats.map((chat) => (
-            <ChatItem
-              key={chat.id}
-              chat={chat}
-              onPress={handleChatPress}
-            />
-          ))}
+          {filteredChats.map((chat) => {
+            const typingInfo = typingChats.get(chat.id);
+            return (
+              <ChatItem
+                key={chat.id}
+                chat={chat}
+                onPress={handleChatPress}
+                isTyping={!!typingInfo}
+              />
+            );
+          })}
         </VStack>
       </ScrollView>
     );
@@ -678,12 +876,12 @@ export default function ChatsScreen() {
                 borderRadius="$lg"
                 bg="white"
               >
-                <InputField
-                  placeholder="Search chats by name..."
-                  value={searchQuery}
-                  onChangeText={setSearchQuery}
-                  autoFocus={true}
-                />
+                              <InputField
+                placeholder="Search chats by name or message..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                autoFocus={true}
+              />
               </Input>
             </Box>
           )}
