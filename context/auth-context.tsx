@@ -13,14 +13,12 @@ type HomeStats = {
 type AuthContextType = {
     isAuthenticated: boolean;
     isRegistrationCompleted: boolean;
-    isProfileSetupCompleted: boolean;
     isLoading: boolean;
     user: User | null;
     stats: HomeStats | null;
     sendOTP: (phone: string) => Promise<boolean>;
     verifyOTP: (phone: string, otp: string) => Promise<{ success: boolean, userData?: User }>;
     completeRegistration: (data: RegistrationData) => Promise<{ success: boolean, userData?: User }>;
-    completeProfileSetup: (data: any) => Promise<{ success: boolean }>;
     login: (token: string, user: User) => Promise<void>;
     logout: () => Promise<void>;
     updateUser: (updatedUser: User) => Promise<void>;
@@ -37,13 +35,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [stats, setStats] = useState<HomeStats | null>(null);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [isRegistrationCompleted, setIsRegistrationCompleted] = useState(false);
-    const [isProfileSetupCompleted, setIsProfileSetupCompleted] = useState(false);
     const [isLoading, setIsLoading] = useState(true);
 
-    // Initialize WebSocket service when user is authenticated, registration is completed, and profile setup is completed
+    // Initialize WebSocket service when user is authenticated and registration is completed
     useEffect(() => {
         const initializeWebSocket = async () => {
-            if (isAuthenticated && isRegistrationCompleted && isProfileSetupCompleted && user?.id) {
+            if (isAuthenticated && isRegistrationCompleted && user?.id) {
                 try {
                     console.log('Initializing WebSocket service for user:', user.id);
                     
@@ -80,10 +77,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     console.error('Error initializing WebSocket service:', error);
                 }
             } else {
-                // Disconnect WebSocket if user is not authenticated, registration not completed, or profile setup not completed
+                // Disconnect WebSocket if user is not authenticated or registration not completed
                 try {
                     webSocketService.disconnect();
-                    console.log('WebSocket service disconnected - user not authenticated, registration not completed, or profile setup not completed');
+                    console.log('WebSocket service disconnected - user not authenticated or registration not completed');
                 } catch (error) {
                     console.error('Error disconnecting WebSocket service:', error);
                 }
@@ -91,13 +88,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         };
 
         initializeWebSocket();
-    }, [isAuthenticated, isRegistrationCompleted, isProfileSetupCompleted, user?.id]);
+    }, [isAuthenticated, isRegistrationCompleted, user?.id]);
 
     useEffect(() => {
         const checkAuthStatus = async () => {
             try {
                 console.log('Checking auth status on app start...');
                 setIsLoading(true);
+                
+                // Ensure database is properly initialized
+                try {
+                    if (!sqliteService.isServiceInitialized()) {
+                        console.log('SQLite service not initialized, initializing...');
+                        await sqliteService.forceRecreateAllTables();
+                    }
+                } catch (dbError) {
+                    console.error('Error initializing database on app start:', dbError);
+                }
+                
                 const token = await AsyncStorage.getItem('auth_token');
                 console.log('Token found in storage:', !!token);
                 
@@ -113,16 +121,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                         console.log('Parsed user data:', parsedUser);
                         console.log('User registration_completed:', parsedUser.registration_completed);
                         
-                        // Check profile setup completion status
-                        const profileSetupCompleted = await AsyncStorage.getItem('profile_setup_completed');
-                        const isProfileSetupCompleted = profileSetupCompleted === 'true' || parsedUser.profile_setup_completed === true;
-                        
                         setUser(parsedUser);
                         setIsRegistrationCompleted(parsedUser.registration_completed);
-                        setIsProfileSetupCompleted(isProfileSetupCompleted);
                         setIsAuthenticated(true);
                         
-                        console.log('Auth status set - isAuthenticated: true, isRegistrationCompleted:', parsedUser.registration_completed, 'isProfileSetupCompleted:', isProfileSetupCompleted);
+                        console.log('Auth status set - isAuthenticated: true, isRegistrationCompleted:', parsedUser.registration_completed);
                     } else {
                         console.log('No user data found, removing token and setting auth to false');
                         await AsyncStorage.removeItem('auth_token');
@@ -303,21 +306,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             await apiClient.auth.logout();
 
             await AsyncStorage.removeItem('user_data');
-            await AsyncStorage.removeItem('profile_setup_completed');
 
             // Clear and delete the local SQLite database
             try {
                 await sqliteService.clearDatabaseOnLogout();
                 console.log('SQLite database cleared successfully on logout');
+                
+                // Reinitialize database for next user
+                await sqliteService.reinitializeAfterLogout();
+                console.log('SQLite database reinitialized for next user');
             } catch (sqliteError) {
                 console.error('Error clearing SQLite database on logout:', sqliteError);
-                // Continue with logout even if database clearing fails
+                // Try to reinitialize anyway
+                try {
+                    await sqliteService.reinitializeAfterLogout();
+                    console.log('SQLite database reinitialized despite clearing error');
+                } catch (reinitError) {
+                    console.error('Error reinitializing database:', reinitError);
+                    // As a last resort, try to force recreate tables
+                    try {
+                        await sqliteService.forceRecreateAllTables();
+                        console.log('Tables force recreated as fallback');
+                    } catch (forceError) {
+                        console.error('Error force recreating tables:', forceError);
+                    }
+                }
             }
 
             setUser(null);
             setStats(null);
             setIsRegistrationCompleted(false);
-            setIsProfileSetupCompleted(false);
             setIsAuthenticated(false);
         } catch (error) {
             console.error('Error during logout:', error);
@@ -398,48 +416,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     };
 
-    const completeProfileSetup = async (data: any): Promise<{ success: boolean }> => {
-        try {
-            console.log('Completing profile setup with data:', data);
-            
-            // TODO: Send profile setup data to backend API
-            // const response = await apiClient.profile.completeProfileSetup(data);
-            
-            // For now, just mark as completed locally
-            setIsProfileSetupCompleted(true);
-            
-            // Update user data to include profile setup completion
-            if (user) {
-                const updatedUser = {
-                    ...user,
-                    profile_setup_completed: true
-                };
-                await updateUser(updatedUser);
-            }
-            
-            // Store profile setup completion in local storage
-            await AsyncStorage.setItem('profile_setup_completed', 'true');
-            
-            console.log('Profile setup completed successfully');
-            return { success: true };
-        } catch (error) {
-            console.error('Error completing profile setup:', error);
-            throw error;
-        }
-    };
+
 
     return (
         <AuthContext.Provider value={{
             isAuthenticated,
             isRegistrationCompleted,
-            isProfileSetupCompleted,
             isLoading,
             user,
             stats,
             sendOTP,
             verifyOTP,
             completeRegistration,
-            completeProfileSetup,
             login,
             logout,
             updateUser,

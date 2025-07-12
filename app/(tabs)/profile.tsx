@@ -25,15 +25,22 @@ import {
   ModalFooter,
   Button,
   ButtonText,
+  Heading,
 } from "@gluestack-ui/themed";
 import { Ionicons } from "@expo/vector-icons";
 import DebugNotificationCounts from "@/components/DebugNotificationCounts";
+import { CircularProgressAvatar } from "@/components/ui/avatar/CircularProgressAvatar";
+import { ProfileCompletionCard } from "@/app/profile/components/ProfileCompletionCard";
+import { profileCompletionService } from "@/services/profile-completion-service";
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { logout, user, refreshProfile } = useAuth();
   const hasRefreshedRef = useRef(false);
   const [showLogoutConfirmation, setShowLogoutConfirmation] = useState(false);
+  
+  // Calculate profile completion
+  const profileCompletion = profileCompletionService.calculateCompletion(user);
 
   // Refresh profile data when component mounts - only once
   useEffect(() => {
@@ -148,26 +155,20 @@ export default function ProfileScreen() {
       >
         {/* Header Section */}
         <Box alignItems="center" pt="$8" pb="$6" px="$4">
-          <Avatar size="2xl" mb="$4">
-            {profilePhotoUrl ? (
-              <AvatarImage
-                source={{
-                  uri: profilePhotoUrl,
-                }}
-                alt="Profile"
-              />
-            ) : (
-              <AvatarFallbackText fontSize="$2xl" fontWeight="$bold" color="$primary600">
-                {user?.profile?.first_name?.charAt(0) || 'U'}{user?.profile?.last_name?.charAt(0) || ''}
-              </AvatarFallbackText>
-            )}
-          </Avatar>
+          <CircularProgressAvatar
+            imageUrl={profilePhotoUrl}
+            fallbackText={`${user?.profile?.first_name?.charAt(0) || 'U'}${user?.profile?.last_name?.charAt(0) || ''}`}
+            size="2xl"
+            percentage={profileCompletion.overallPercentage}
+            showPercentageBadge={profileCompletion.overallPercentage < 100}
+          />
 
           <Text
             fontSize="$2xl"
             fontWeight="$bold"
             color="$primary900"
             textAlign="center"
+            mt="$4"
           >
             {user?.profile?.first_name} {user?.profile?.last_name}
           </Text>
@@ -176,10 +177,12 @@ export default function ProfileScreen() {
             fontSize="$md"
             color="$primary700"
             textAlign="center"
-            mb="$4"
+            mb="$2"
           >
             {locationString}
           </Text>
+
+
 
           <HStack space="md">
             <Pressable
@@ -221,19 +224,16 @@ export default function ProfileScreen() {
         </Box>
 
         {/* Main Content */}
-        <VStack space="lg" px="$4" pb="$20">
-          {/* Debug Section - Temporary */}
-          <Box
-            bg="$white"
-            borderRadius="$xl"
-            shadowColor="$backgroundLight300"
-            shadowOffset={{ width: 0, height: 2 }}
-            shadowOpacity={0.1}
-            shadowRadius={4}
-            elevation={3}
-            overflow="hidden"
-          >
-          </Box>
+        <VStack space="lg" px="$0" pb="$20">
+          {/* Profile Completion Card */}
+          <ProfileCompletionCard
+            completionPercentage={profileCompletion.overallPercentage}
+            incompleteSections={profileCompletion.sections
+              .filter(section => section.percentage < 100)
+              .map(section => section.title)
+            }
+            totalPoints={Math.round(profileCompletion.overallPercentage)}
+          />
 
           {/* Account Settings Section */}
           <Box
@@ -245,6 +245,7 @@ export default function ProfileScreen() {
             shadowRadius={4}
             elevation={3}
             overflow="hidden"
+            mx="$4"
           >
             <Text
               fontSize="$lg"
@@ -505,6 +506,7 @@ export default function ProfileScreen() {
             shadowOpacity={0.1}
             shadowRadius={4}
             elevation={3}
+            mx="$4"
           >
             <HStack
               alignItems="center"

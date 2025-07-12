@@ -230,6 +230,7 @@ class SQLiteService {
       if (!versionInfo.exists) {
         console.log('Database is new, creating tables...');
         await this.createTables();
+        await this.createIndexes();
         await this.createVersionTable();
         console.log('New database setup completed');
       } else if (versionInfo.version < this.dbVersion) {
@@ -238,6 +239,7 @@ class SQLiteService {
         console.log('Database migration completed');
       }
 
+      this.isInitialized = true;
       console.log('Database initialization completed');
     } catch (error) {
       console.error('Error initializing database:', error);
@@ -2189,20 +2191,62 @@ class SQLiteService {
    * This drops all tables and closes the database connection
    */
   async clearDatabaseOnLogout(): Promise<void> {
-    if (!this.db) throw new Error('Database not initialized');
+    if (!this.db) {
+      console.log('Database not initialized, nothing to clear');
+      return;
+    }
 
     try {
       console.log('Clearing database on logout...');
 
-      // Drop all tables in a transaction
-      await this.db.withTransactionAsync(async () => {
-        await this.db!.execAsync('DROP TABLE IF EXISTS messages');
-        await this.db!.execAsync('DROP TABLE IF EXISTS profile_photos');
-        await this.db!.execAsync('DROP TABLE IF EXISTS profiles');
-        await this.db!.execAsync('DROP TABLE IF EXISTS other_users');
-        await this.db!.execAsync('DROP TABLE IF EXISTS chats');
-        await this.db!.execAsync('DROP TABLE IF EXISTS database_version');
-      });
+      // Wait for database to be available
+      await this.waitForDatabaseAvailability();
+
+      // First, try to close any active connections and wait a bit
+      try {
+        // Force close any pending transactions
+        await this.db.execAsync('ROLLBACK');
+      } catch (rollbackError) {
+        console.log('No active transaction to rollback');
+      }
+
+      // Wait a moment for any pending operations to complete
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Try to clear tables one by one instead of using a transaction
+      // Note: database_version should be dropped last to ensure proper reinitialization
+      const tablesToDrop = [
+        'messages',
+        'profile_photos', 
+        'profiles',
+        'other_users',
+        'chats',
+        'notification_counts',
+        'user_settings',
+        'blocked_users',
+        'user_feedback',
+        'user_reports',
+        'emergency_contacts',
+        'data_export_requests',
+        'account_deletion_requests',
+        'user_verification_status',
+        'support_tickets',
+        'password_change_history',
+        'email_change_requests',
+        'cached_images',
+        'optimized_cached_images',
+        'database_version' // Drop version table last
+      ];
+
+      for (const tableName of tablesToDrop) {
+        try {
+          await this.db.execAsync(`DROP TABLE IF EXISTS ${tableName}`);
+          console.log(`Dropped table: ${tableName}`);
+        } catch (dropError) {
+          console.log(`Could not drop table ${tableName}:`, dropError);
+          // Continue with other tables even if one fails
+        }
+      }
 
       // Close the database connection
       await this.closeDatabase();
@@ -2210,6 +2254,15 @@ class SQLiteService {
       console.log('Database cleared and closed successfully');
     } catch (error) {
       console.error('Error clearing database on logout:', error);
+      
+      // If clearing fails, try to at least close the database
+      try {
+        await this.closeDatabase();
+        console.log('Database closed despite clearing error');
+      } catch (closeError) {
+        console.error('Error closing database:', closeError);
+      }
+      
       throw error;
     }
   }
@@ -2356,9 +2409,113 @@ class SQLiteService {
       
       // Reinitialize the database
       await this.initDatabase();
+      this.isInitialized = true;
       console.log('Database reset completed');
     } catch (error) {
       console.error('Error resetting database:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Check if database is currently in use and wait if necessary
+   */
+  private async waitForDatabaseAvailability(): Promise<void> {
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    while (attempts < maxAttempts) {
+      try {
+        // Try a simple query to check if database is available
+        if (this.db) {
+          await this.db.execAsync('SELECT 1');
+          return; // Database is available
+        }
+      } catch (error) {
+        console.log(`Database not available, attempt ${attempts + 1}/${maxAttempts}`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        attempts++;
+      }
+    }
+    
+    throw new Error('Database not available after multiple attempts');
+  }
+
+  /**
+   * Force recreate all tables if they're missing
+   * This is useful after logout when tables might be dropped but not recreated
+   */
+  async forceRecreateAllTables(): Promise<void> {
+    try {
+      console.log('Force recreating all tables...');
+      
+      if (!this.db) {
+        await this.initDatabase();
+        return;
+      }
+
+      // Check if key tables exist
+      const tablesToCheck = [
+        'chats',
+        'messages', 
+        'other_users',
+        'profiles',
+        'profile_photos',
+        'notification_counts',
+        'user_settings'
+      ];
+
+      let missingTables = false;
+      for (const tableName of tablesToCheck) {
+        try {
+          await this.db.execAsync(`SELECT 1 FROM ${tableName} LIMIT 1`);
+        } catch (error) {
+          console.log(`Table ${tableName} is missing`);
+          missingTables = true;
+          break;
+        }
+      }
+
+      if (missingTables) {
+        console.log('Some tables are missing, recreating all tables...');
+        await this.createTables();
+        await this.createIndexes();
+        await this.createVersionTable();
+        this.isInitialized = true;
+        console.log('All tables recreated successfully');
+      } else {
+        console.log('All tables exist, no recreation needed');
+        this.isInitialized = true;
+      }
+    } catch (error) {
+      console.error('Error force recreating tables:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reinitialize database after logout
+   * This ensures a clean database state for the next user
+   */
+  async reinitializeAfterLogout(): Promise<void> {
+    try {
+      console.log('Reinitializing database after logout...');
+      
+      // Close current database connection
+      if (this.db) {
+        await this.closeDatabase();
+      }
+      
+      // Wait a moment for any pending operations
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      // Force reset the database to ensure clean state
+      await this.resetDatabase();
+      this.isInitialized = true;
+      
+      console.log('Database reinitialized successfully after logout');
+    } catch (error) {
+      console.error('Error reinitializing database after logout:', error);
       throw error;
     }
   }
