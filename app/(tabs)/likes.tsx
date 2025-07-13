@@ -18,6 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from 'expo-linear-gradient';
 import { likesService, Like, Match, getProfilePhotoUrl } from "@/services/likes-service";
 import MatchModal from "@/components/ui/home/MatchModal";
+import { webSocketService } from "@/services/websocket-service";
 
 const { width: screenWidth } = Dimensions.get('window');
 
@@ -399,6 +400,24 @@ export default function LikesScreen() {
     fetchLikes(1, true);
     fetchMatches(1, true);
   }, [fetchLikes, fetchMatches]);
+
+  // Listen for new likes via WebSocket
+  useEffect(() => {
+    const handleNewLike = (like: any) => {
+      console.log('New like received in likes tab:', like);
+      
+      // Refresh the likes list to show the new like
+      fetchLikes(1, true);
+    };
+
+    // Subscribe to new like events
+    webSocketService.on('user.like.new', handleNewLike);
+
+    // Cleanup event listener
+    return () => {
+      webSocketService.off('user.like.new', handleNewLike);
+    };
+  }, [fetchLikes]);
 
   // Function to handle refresh
   const handleRefresh = useCallback(() => {

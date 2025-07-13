@@ -156,7 +156,11 @@ class LikesService {
       if (response.status === 'success' && response.data) {
         this.likesCurrentPage = response.data.pagination.current_page;
         this.likesLastPage = response.data.pagination.last_page;
-        return response.data;
+        // Return the full response structure that the component expects
+        return {
+          status: response.status,
+          data: response.data
+        };
       }
 
       return null;
@@ -179,7 +183,11 @@ class LikesService {
       if (response.status === 'success' && response.data) {
         this.matchesCurrentPage = response.data.pagination.current_page;
         this.matchesLastPage = response.data.pagination.last_page;
-        return response.data;
+        // Return the full response structure that the component expects
+        return {
+          status: response.status,
+          data: response.data
+        };
       }
 
       return null;
@@ -197,7 +205,11 @@ class LikesService {
       const response = await apiClient.likes.send(userId);
 
       if (response.status === 'success') {
-        return response.data;
+        // Return the full response structure that the component expects
+        return {
+          status: response.status,
+          data: response.data
+        };
       }
 
       return null;

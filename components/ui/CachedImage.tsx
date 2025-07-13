@@ -8,7 +8,7 @@ import {
   Animated,
   Text
 } from 'react-native';
-import { optimizedImageCacheService } from '@/services/optimized-image-cache-service';
+import { imageCacheService } from '@/services/image-cache-service';
 import { BlurView } from 'expo-blur';
 
 interface CachedImageProps extends Omit<ImageProps, 'source'> {
@@ -49,6 +49,7 @@ const CachedImageComponent: React.FC<CachedImageProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState(0);
+  const [isProgressiveLoading, setIsProgressiveLoading] = useState(false);
   
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
@@ -72,7 +73,7 @@ const CachedImageComponent: React.FC<CachedImageProps> = ({
       setDownloadProgress(0);
       onLoadStart?.();
 
-      const result = await optimizedImageCacheService.getCachedImageUrl(
+      const result = await imageCacheService.getCachedImageUrl(
         source.uri,
         type,
         {
@@ -82,7 +83,8 @@ const CachedImageComponent: React.FC<CachedImageProps> = ({
           size,
           forceRefresh: false,
           onProgress: showProgress ? handleProgress : undefined,
-          returnBlurhash: enableProgressiveLoading
+          returnBlurhash: enableProgressiveLoading,
+          enableProgressive: enableProgressiveLoading
         }
       );
 
@@ -92,6 +94,18 @@ const CachedImageComponent: React.FC<CachedImageProps> = ({
         setImageUri(result.uri);
         if (enableProgressiveLoading && result.blurhash) {
           setBlurhash(result.blurhash);
+        }
+        
+        // Handle progressive loading state
+        if (result.isProgressive !== undefined) {
+          setIsProgressiveLoading(result.isProgressive);
+          
+          // If this is a progressive thumbnail, start loading higher quality
+          if (result.isProgressive && size !== 'thumbnail') {
+            setTimeout(() => {
+              loadHigherQuality();
+            }, 100);
+          }
         }
       } else {
         setLoadError(true);
@@ -107,6 +121,44 @@ const CachedImageComponent: React.FC<CachedImageProps> = ({
         setIsLoading(false);
         onLoadEnd?.();
       }
+    }
+  };
+
+  const loadHigherQuality = async () => {
+    if (!source?.uri || !isProgressiveLoading) return;
+
+    try {
+      // Load the requested quality in background
+      const result = await imageCacheService.getCachedImageUrl(
+        source.uri,
+        type,
+        {
+          userId,
+          chatId,
+          messageId,
+          size,
+          forceRefresh: false,
+          enableProgressive: false // Disable progressive for this call to get the final quality
+        }
+      );
+
+      if (!isMounted.current) return;
+
+      if (result && result.uri !== imageUri) {
+        // Update to higher quality with smooth transition
+        setImageUri(result.uri);
+        setIsProgressiveLoading(false);
+        
+        // Restart fade animation for smoother transition
+        fadeAnim.setValue(0.7);
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 200,
+          useNativeDriver: true,
+        }).start();
+      }
+    } catch (error) {
+      console.error('Error loading higher quality:', error);
     }
   };
 
@@ -263,5 +315,5 @@ export const preloadImages = async (
     priority?: 'high' | 'low';
   }
 ) => {
-  return optimizedImageCacheService.preloadImages(imageUrls, type, options);
+  return imageCacheService.preloadImages(imageUrls, type, options);
 }; 

@@ -334,7 +334,7 @@ const MatchModal = ({
                 <VStack space="sm" mb="$4">
                   <HStack justifyContent="center" alignItems="center">
                     <HStack space="xs">
-                      {mutualInterests.map((interest, index) => (
+                      {mutualInterests.map((interest: string, index: number) => (
                         <Badge key={index} bg="$primary50" borderRadius="$full" px="$2" py="$1">
                           <BadgeText color="$primary600" size="2xs">
                             {interest}

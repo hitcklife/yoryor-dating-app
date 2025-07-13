@@ -3,6 +3,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { apiClient, User, RegistrationData } from "../services/api-client";
 import sqliteService from "../services/sqlite-service";
 import { webSocketService } from "../services/websocket-service";
+import { offlineManager } from "../services/offline/offline-manager";
 
 type HomeStats = {
     unread_messages_count: number;
@@ -53,9 +54,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                             console.log('New match received in app:', match);
                             // You can update app state here if needed
                         },
-                        onNewLike: (like: any) => {
+                        onNewLike: async (like: any) => {
                             console.log('New like received in app:', like);
-                            // You can update app state here if needed
+                            
+                            // Update stats to increment likes count
+                            setStats(prevStats => {
+                                if (prevStats) {
+                                    const newStats = {
+                                        ...prevStats,
+                                        new_likes_count: prevStats.new_likes_count + 1
+                                    };
+                                    console.log('Updated stats with new like:', newStats);
+                                    return newStats;
+                                }
+                                return prevStats;
+                            });
+                            
+                            // Also update the local SQLite database
+                            if (user?.id) {
+                                try {
+                                    await sqliteService.updateNewLikesCount(user.id, undefined, true); // increment = true
+                                    console.log('SQLite likes count incremented successfully');
+                                } catch (error) {
+                                    console.error('Error updating SQLite likes count:', error);
+                                }
+                            }
                         },
                         onIncomingCall: (call: any) => {
                             console.log('Incoming call received in app:', call);
@@ -76,6 +99,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 } catch (error) {
                     console.error('Error initializing WebSocket service:', error);
                 }
+
+                // Start offline manager when user is authenticated and registration is completed
+                try {
+                    console.log('Starting offline manager...');
+                    await offlineManager.restart();
+                    console.log('Offline manager started successfully');
+                } catch (error) {
+                    console.error('Error starting offline manager:', error);
+                }
             } else {
                 // Disconnect WebSocket if user is not authenticated or registration not completed
                 try {
@@ -83,6 +115,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     console.log('WebSocket service disconnected - user not authenticated or registration not completed');
                 } catch (error) {
                     console.error('Error disconnecting WebSocket service:', error);
+                }
+
+                // Stop offline manager when user is not authenticated or registration not completed
+                try {
+                    console.log('Stopping offline manager...');
+                    await offlineManager.stop();
+                    console.log('Offline manager stopped successfully');
+                } catch (error) {
+                    console.error('Error stopping offline manager:', error);
                 }
             }
         };
@@ -101,6 +142,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                     if (!sqliteService.isServiceInitialized()) {
                         console.log('SQLite service not initialized, initializing...');
                         await sqliteService.forceRecreateAllTables();
+                    }
+                    
+                    // Ensure image cache service is initialized
+                    try {
+                        const { imageCacheService } = await import('../services/image-cache-service');
+                        await imageCacheService.initialize();
+                        console.log('Image cache service initialized on app start');
+                    } catch (imageCacheError) {
+                        console.error('Error initializing image cache service on app start:', imageCacheError);
                     }
                 } catch (dbError) {
                     console.error('Error initializing database on app start:', dbError);
@@ -294,7 +344,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const logout = async () => {
         try {
-            // Disconnect WebSocket service first
+            // Stop offline manager first
+            try {
+                console.log('Stopping offline manager on logout...');
+                await offlineManager.stop();
+                console.log('Offline manager stopped on logout');
+            } catch (offlineError) {
+                console.error('Error stopping offline manager on logout:', offlineError);
+            }
+
+            // Disconnect WebSocket service
             try {
                 webSocketService.disconnect();
                 console.log('WebSocket service disconnected on logout');
@@ -315,12 +374,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 // Reinitialize database for next user
                 await sqliteService.reinitializeAfterLogout();
                 console.log('SQLite database reinitialized for next user');
+                
+                // Reinitialize image cache service
+                try {
+                    const { imageCacheService } = await import('../services/image-cache-service');
+                    await imageCacheService.initialize();
+                    console.log('Image cache service reinitialized for next user');
+                } catch (imageCacheError) {
+                    console.error('Error reinitializing image cache service:', imageCacheError);
+                }
             } catch (sqliteError) {
                 console.error('Error clearing SQLite database on logout:', sqliteError);
                 // Try to reinitialize anyway
                 try {
                     await sqliteService.reinitializeAfterLogout();
                     console.log('SQLite database reinitialized despite clearing error');
+                    
+                    // Reinitialize image cache service
+                    try {
+                        const { imageCacheService } = await import('../services/image-cache-service');
+                        await imageCacheService.initialize();
+                        console.log('Image cache service reinitialized despite error');
+                    } catch (imageCacheError) {
+                        console.error('Error reinitializing image cache service:', imageCacheError);
+                    }
                 } catch (reinitError) {
                     console.error('Error reinitializing database:', reinitError);
                     // As a last resort, try to force recreate tables

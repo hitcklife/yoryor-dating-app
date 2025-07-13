@@ -4,7 +4,7 @@ import { Box, HStack, VStack, Text, Avatar, AvatarImage } from "@gluestack-ui/th
 import { Ionicons } from "@expo/vector-icons";
 import { Chat } from "@/services/chats-service";
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ProfileImage } from "@/components/ui/CachedImage";
+import { CachedImage } from "@/components/ui/CachedImage";
 
 interface ChatHeaderProps {
   chat: Chat;
@@ -214,11 +214,13 @@ const ChatHeader: React.FC<ChatHeaderProps> = ({
           <Pressable onPress={onOpenUserProfile}>
             <HStack alignItems="center" space="md">
               <Box position="relative">
-                <ProfileImage
-                  uri={userData.photoUrl}
-                  size={40}
+                <CachedImage
+                  source={{ uri: userData.photoUrl }}
+                  type="profile"
+                  size="thumbnail"
                   userId={chat?.other_user?.id}
-                  fallbackUri="https://via.placeholder.com/40"
+                  fallbackSource={{ uri: "https://via.placeholder.com/40" }}
+                  style={{ width: 40, height: 40, borderRadius: 20 }}
                 />
                 {/* Online Status Indicator */}
                 {userData.isOnline && (

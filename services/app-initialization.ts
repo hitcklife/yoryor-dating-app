@@ -1,8 +1,12 @@
 import { notificationService } from './notification-service';
 import { sqliteService } from './sqlite-service';
 import { initializeChatsService } from './chats-service';
-import { optimizedImageCacheService } from './optimized-image-cache-service';
-import { performanceMonitor } from './performance-monitoring-service';
+import { imageCacheService } from './image-cache-service';
+import { performanceMonitoringService } from './performance-monitoring-service';
+import { enhancedPerformanceMonitoringService } from './enhanced-performance-monitoring-service';
+import { memoryLeakDetectionService } from './memory-leak-detection-service';
+import { performanceReportingService } from './performance-reporting-service';
+import { offlineManager } from './offline/offline-manager';
 
 interface InitializationStep {
   name: string;
@@ -37,6 +41,13 @@ export class AppInitializationService {
         critical: true,
       },
       {
+        name: 'Offline Manager',
+        execute: async () => {
+          await offlineManager.initialize();
+        },
+        critical: false,
+      },
+      {
         name: 'Chats Service',
         execute: async () => {
           await initializeChatsService();
@@ -53,14 +64,39 @@ export class AppInitializationService {
       {
         name: 'Image Cache Service',
         execute: async () => {
-          await optimizedImageCacheService.initialize();
+          await imageCacheService.initialize();
         },
         critical: false,
       },
       {
-        name: 'Performance Monitoring',
+        name: 'Database Performance Monitoring',
         execute: async () => {
-          await performanceMonitor.startMonitoring();
+          // Database performance monitoring initializes automatically
+          console.log('Database performance monitoring initialized');
+        },
+        critical: false,
+      },
+      {
+        name: 'Enhanced Performance Monitoring',
+        execute: async () => {
+          // Enhanced performance monitoring initializes automatically
+          console.log('Enhanced performance monitoring initialized');
+        },
+        critical: false,
+      },
+      {
+        name: 'Memory Leak Detection',
+        execute: async () => {
+          // Memory leak detection initializes automatically
+          console.log('Memory leak detection initialized');
+        },
+        critical: false,
+      },
+      {
+        name: 'Performance Reporting',
+        execute: async () => {
+          // Performance reporting initializes automatically
+          console.log('Performance reporting initialized');
         },
         critical: false,
       },
@@ -105,7 +141,7 @@ export class AppInitializationService {
       this.isInitialized = true;
       
       // Log initial performance stats
-      const stats = performanceMonitor.getPerformanceStats();
+      const stats = enhancedPerformanceMonitoringService.getPerformanceStatus();
       console.log('Initial Performance Stats:', stats);
     } catch (error) {
       console.error('=== APP INITIALIZATION FAILED ===', error);
@@ -122,7 +158,9 @@ export class AppInitializationService {
       console.log('=== APP CLEANUP START ===');
       
       // Stop performance monitoring
-      performanceMonitor.stopMonitoring();
+      enhancedPerformanceMonitoringService.shutdown();
+      memoryLeakDetectionService.shutdown();
+      performanceReportingService.shutdown();
       
       // Disconnect WebSocket
       const { webSocketService } = await import('./websocket-service');
@@ -133,7 +171,7 @@ export class AppInitializationService {
       chatsService.cleanup();
       
       // Clear image cache if needed (optional)
-      // await optimizedImageCacheService.clearCache();
+      // await imageCacheService.clearCache();
       
       this.isInitialized = false;
       console.log('=== APP CLEANUP COMPLETE ===');

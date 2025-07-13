@@ -39,6 +39,13 @@ class VideoSDKService {
   private isSpeakerOn: boolean = true;
   private isDestroyed: boolean = false;
 
+  // Legacy compatibility properties (for Agora service migration)
+  private localUid: number = 0;
+  private remoteUid: number | null = null;
+  private channelId: string | null = null;
+  private userJoinedCallback: ((uid: number) => void) | null = null;
+  private userOfflineCallback: ((uid: number) => void) | null = null;
+
   constructor() {
     // Don't initialize automatically - wait for explicit initialization
   }
@@ -250,11 +257,18 @@ class VideoSDKService {
    */
   async leaveMeeting(): Promise<void> {
     try {
-      if (this.meetingInstance && this.meetingInstance.leave) {
-        await this.meetingInstance.leave();
-        console.log('Left meeting successfully');
+      if (this.meetingInstance) {
+        this.meetingInstance.leave();
       }
-      this.cleanup();
+      
+      this.meetingId = null;
+      this.localParticipantId = null;
+      
+      if (this.meetingLeftCallback) {
+        this.meetingLeftCallback();
+      }
+      
+      console.log('Left meeting successfully');
     } catch (error) {
       console.error('Error leaving meeting:', error);
       throw error;
@@ -266,14 +280,13 @@ class VideoSDKService {
    */
   async toggleMicrophone(): Promise<void> {
     try {
-      if (!this.meetingInstance) {
-        throw new Error('Meeting not initialized');
-      }
-
-      if (this.meetingInstance.toggleMic) {
-        await this.meetingInstance.toggleMic();
+      if (this.meetingInstance) {
+        if (this.isAudioEnabled) {
+          this.meetingInstance.muteMic();
+        } else {
+          this.meetingInstance.unmuteMic();
+        }
         this.isAudioEnabled = !this.isAudioEnabled;
-        console.log(`Microphone ${this.isAudioEnabled ? 'enabled' : 'disabled'}`);
       }
     } catch (error) {
       console.error('Error toggling microphone:', error);
@@ -286,14 +299,13 @@ class VideoSDKService {
    */
   async toggleCamera(): Promise<void> {
     try {
-      if (!this.meetingInstance) {
-        throw new Error('Meeting not initialized');
-      }
-
-      if (this.meetingInstance.toggleWebcam) {
-        await this.meetingInstance.toggleWebcam();
+      if (this.meetingInstance) {
+        if (this.isVideoEnabled) {
+          this.meetingInstance.disableWebcam();
+        } else {
+          this.meetingInstance.enableWebcam();
+        }
         this.isVideoEnabled = !this.isVideoEnabled;
-        console.log(`Camera ${this.isVideoEnabled ? 'enabled' : 'disabled'}`);
       }
     } catch (error) {
       console.error('Error toggling camera:', error);
@@ -306,13 +318,8 @@ class VideoSDKService {
    */
   async switchCamera(): Promise<void> {
     try {
-      if (!this.meetingInstance) {
-        throw new Error('Meeting not initialized');
-      }
-
-      if (this.meetingInstance.changeWebcam) {
-        await this.meetingInstance.changeWebcam();
-        console.log('Camera switched');
+      if (this.meetingInstance) {
+        this.meetingInstance.changeWebcam();
       }
     } catch (error) {
       console.error('Error switching camera:', error);
@@ -321,14 +328,14 @@ class VideoSDKService {
   }
 
   /**
-   * Toggle speaker (for state tracking)
+   * Toggle speaker
    */
   async toggleSpeaker(): Promise<void> {
     try {
-      // VideoSDK handles speaker routing automatically
-      // This is more for UI state tracking
-      this.isSpeakerOn = !this.isSpeakerOn;
-      console.log(`Speaker ${this.isSpeakerOn ? 'on' : 'off'}`);
+      if (this.meetingInstance) {
+        this.meetingInstance.setSpeakerOn(!this.isSpeakerOn);
+        this.isSpeakerOn = !this.isSpeakerOn;
+      }
     } catch (error) {
       console.error('Error toggling speaker:', error);
       throw error;
@@ -350,21 +357,21 @@ class VideoSDKService {
   }
 
   /**
-   * Check if audio is enabled
+   * Check if audio is muted
    */
   isAudioMuted(): boolean {
     return !this.isAudioEnabled;
   }
 
   /**
-   * Check if video is enabled
+   * Check if video is disabled
    */
   isVideoMuted(): boolean {
     return !this.isVideoEnabled;
   }
 
   /**
-   * Check if speaker is on
+   * Check if speaker is enabled
    */
   isSpeakerEnabled(): boolean {
     return this.isSpeakerOn;
@@ -377,9 +384,9 @@ class VideoSDKService {
     return this.initialized && !this.isDestroyed;
   }
 
-  // Event callback setters (for compatibility with existing code)
+  // Event callback setters
   onJoinSuccess(callback: (uid: number | string) => void): void {
-    this.joinSuccessCallback = callback as any;
+    this.joinSuccessCallback = callback;
   }
 
   onParticipantJoined(callback: (participant: any) => void): void {
@@ -400,75 +407,87 @@ class VideoSDKService {
 
   // Legacy method names for compatibility with Agora service
   async joinChannel(channelId: string, userId: number): Promise<void> {
-    return this.joinMeeting(channelId);
+    this.channelId = channelId;
+    this.localUid = userId;
+    const meetingId = await this.createMeetingForChat(parseInt(channelId));
+    await this.joinMeeting(meetingId);
   }
 
   async leaveChannel(): Promise<void> {
-    return this.leaveMeeting();
+    await this.leaveMeeting();
+    this.channelId = null;
+    this.localUid = 0;
+    this.remoteUid = null;
   }
 
   async toggleAudio(muted: boolean): Promise<void> {
     if (muted !== this.isAudioMuted()) {
-      return this.toggleMicrophone();
+      await this.toggleMicrophone();
     }
   }
 
   async toggleVideo(enabled: boolean): Promise<void> {
-    if (enabled !== this.isVideoEnabled) {
-      return this.toggleCamera();
+    if (enabled !== !this.isVideoMuted()) {
+      await this.toggleCamera();
     }
   }
 
   async toggleSpeakerphone(enabled: boolean): Promise<void> {
-    if (enabled !== this.isSpeakerOn) {
-      return this.toggleSpeaker();
+    if (enabled !== this.isSpeakerEnabled()) {
+      await this.toggleSpeaker();
     }
   }
 
   onUserJoined(callback: (uid: number | string) => void): void {
-    this.participantJoinedCallback = callback as any;
+    this.userJoinedCallback = callback;
   }
 
   onUserOffline(callback: (uid: number | string) => void): void {
-    this.participantLeftCallback = callback as any;
+    this.userOfflineCallback = callback;
+  }
+
+  // Legacy getters for compatibility
+  getLocalUid(): number {
+    return this.localUid;
+  }
+
+  getRemoteUid(): number | null {
+    return this.remoteUid;
+  }
+
+  getCurrentChannelId(): string | null {
+    return this.channelId;
   }
 
   /**
-   * Cleanup meeting resources
+   * Cleanup resources
    */
   private cleanup(): void {
     this.meetingInstance = null;
     this.meetingId = null;
     this.localParticipantId = null;
+    this.isAudioEnabled = true;
+    this.isVideoEnabled = true;
+    this.isSpeakerOn = true;
   }
 
   /**
    * Destroy the service
    */
   async destroy(): Promise<void> {
-    this.isDestroyed = true;
-
     try {
-      if (this.meetingInstance) {
-        await this.leaveMeeting();
-      }
+      await this.leaveMeeting();
+      this.cleanup();
+      this.isDestroyed = true;
+      this.initialized = false;
+      console.log('VideoSDK service destroyed successfully');
     } catch (error) {
-      console.error('Error during cleanup:', error);
+      console.error('Error destroying VideoSDK service:', error);
+      throw error;
     }
-
-    this.cleanup();
-
-    // Clear callbacks
-    this.joinSuccessCallback = null;
-    this.participantJoinedCallback = null;
-    this.participantLeftCallback = null;
-    this.errorCallback = null;
-    this.meetingLeftCallback = null;
-
-    this.initialized = false;
-    console.log('VideoSDK service destroyed successfully');
   }
 }
 
-// Create a singleton instance
-export const videoSDKService = new VideoSDKService(); 
+// Export singleton instance
+export const videoSDKService = new VideoSDKService();
+export default VideoSDKService; 
