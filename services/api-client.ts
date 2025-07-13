@@ -1,7 +1,51 @@
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, CancelTokenSource } from 'axios';
 import { CONFIG, getApiEndpoint } from '@/services/config';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import NetInfo from '@react-native-community/netinfo';
+
+// === API CLIENT OPTIMIZATIONS ===
+
+// Request priority levels
+export enum RequestPriority {
+    HIGH = 'high',      // Auth, messages, calls
+    MEDIUM = 'medium',  // Profiles, matches
+    LOW = 'low'         // Analytics, settings
+}
+
+// Request deduplication cache entry
+interface CachedRequest {
+    promise: Promise<any>;
+    timestamp: number;
+    response?: ApiResponse<any>;
+}
+
+// Request retry configuration
+interface RetryConfig {
+    maxRetries: number;
+    baseDelay: number;
+    maxDelay: number;
+    retryableStatusCodes: number[];
+    retryableNetworkErrors: string[];
+}
+
+// Request priority queue entry
+interface PriorityQueueEntry {
+    request: () => Promise<any>;
+    priority: RequestPriority;
+    cancelToken: CancelTokenSource;
+    timestamp: number;
+}
+
+// Optimized API client configuration
+interface OptimizedApiConfig {
+    requestDeduplication: boolean;
+    responseCompression: boolean;
+    smartRetry: boolean;
+    requestPrioritization: boolean;
+    cacheTimeout: number;
+    maxConcurrentRequests: number;
+    priorityQueueSize: number;
+}
 
 export interface ApiResponse<T = any> {
     status: 'success' | 'error';
@@ -72,12 +116,77 @@ export interface ProfileData {
     interests?: string[];
 }
 
+// Optimized API client configuration
+const OPTIMIZED_CONFIG: OptimizedApiConfig = {
+    requestDeduplication: true,
+    responseCompression: true,
+    smartRetry: true,
+    requestPrioritization: true,
+    cacheTimeout: 30 * 1000, // 30 seconds
+    maxConcurrentRequests: 10,
+    priorityQueueSize: 50
+};
+
+// Retry configuration
+const RETRY_CONFIG: RetryConfig = {
+    maxRetries: 3,
+    baseDelay: 1000, // 1 second
+    maxDelay: 10000, // 10 seconds
+    retryableStatusCodes: [500, 502, 503, 504, 520, 521, 522, 523, 524],
+    retryableNetworkErrors: ['ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'ENOTFOUND', 'ECONNREFUSED']
+};
+
+// Priority mappings for different API endpoints
+const ENDPOINT_PRIORITIES: Record<string, RequestPriority> = {
+    // High priority - Auth, messages, calls
+    'auth': RequestPriority.HIGH,
+    'chats': RequestPriority.HIGH,
+    'messages': RequestPriority.HIGH,
+    'broadcasting': RequestPriority.HIGH,
+    'device-tokens': RequestPriority.HIGH,
+    
+    // Medium priority - Profiles, matches, likes
+    'profile': RequestPriority.MEDIUM,
+    'matches': RequestPriority.MEDIUM,
+    'likes': RequestPriority.MEDIUM,
+    'dislikes': RequestPriority.MEDIUM,
+    'photos': RequestPriority.MEDIUM,
+    'preferences': RequestPriority.MEDIUM,
+    
+    // Low priority - Analytics, settings, support
+    'settings': RequestPriority.LOW,
+    'account': RequestPriority.LOW,
+    'blocked-users': RequestPriority.LOW,
+    'support': RequestPriority.LOW,
+    'emergency-contacts': RequestPriority.LOW,
+    'verification': RequestPriority.LOW,
+    'countries': RequestPriority.LOW,
+    'location': RequestPriority.LOW
+};
+
 class ApiClient {
     private client!: AxiosInstance;
     private authToken: string | null = null;
     private requestQueue: Array<() => Promise<any>> = [];
     private isRefreshingToken = false;
     private baseURL: string = 'https://incredibly-evident-hornet.ngrok-free.app';
+    
+    // === OPTIMIZATION PROPERTIES ===
+    
+    // Request deduplication cache
+    private requestCache = new Map<string, CachedRequest>();
+    
+    // Response cache for successful requests
+    private responseCache = new Map<string, { data: any; timestamp: number }>();
+    
+    // Priority queue for request management
+    private priorityQueue: PriorityQueueEntry[] = [];
+    
+    // Active requests counter
+    private activeRequests = 0;
+    
+    // Request processing timer
+    private processQueueTimer: any = null;
 
     // Singleton pattern
     private static instance: ApiClient;
@@ -100,7 +209,12 @@ class ApiClient {
             timeout: 15000, // 15 seconds
             headers: {
                 'Content-Type': 'application/json',
-                'Accept': 'application/json'
+                'Accept': 'application/json',
+                // Enable response compression
+                ...(OPTIMIZED_CONFIG.responseCompression && {
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Accept-Language': 'en-US,en;q=0.9'
+                })
             }
         });
 
@@ -171,6 +285,14 @@ class ApiClient {
         );
 
         ApiClient.instance = this;
+        
+        // Start the priority queue processor
+        if (OPTIMIZED_CONFIG.requestPrioritization) {
+            this.startQueueProcessor();
+        }
+        
+        // Start cache cleanup timer
+        this.startCacheCleanup();
     }
 
     /**
@@ -187,6 +309,228 @@ class ApiClient {
             status: 'success',
             data: response.data
         };
+    }
+
+    // === OPTIMIZATION METHODS ===
+
+    /**
+     * Generate request signature for deduplication
+     */
+    private generateRequestSignature(method: string, url: string, data?: any, params?: any): string {
+        const normalizedUrl = url.replace(/\/+/g, '/');
+        const dataStr = data ? JSON.stringify(data) : '';
+        const paramsStr = params ? JSON.stringify(params) : '';
+        const signature = `${method.toUpperCase()}:${normalizedUrl}:${dataStr}:${paramsStr}`;
+        
+        // Simple hash function (not cryptographically secure but sufficient for cache keys)
+        let hash = 0;
+        for (let i = 0; i < signature.length; i++) {
+            const char = signature.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32-bit integer
+        }
+        
+        return hash.toString(16);
+    }
+
+    /**
+     * Get request priority based on URL
+     */
+    private getRequestPriority(url: string): RequestPriority {
+        // Extract the first segment after /api/v1/
+        const match = url.match(/\/api\/v\d+\/([^\/]+)/);
+        if (!match) return RequestPriority.LOW;
+        
+        const endpoint = match[1];
+        return ENDPOINT_PRIORITIES[endpoint] || RequestPriority.LOW;
+    }
+
+    /**
+     * Start priority queue processor
+     */
+    private startQueueProcessor(): void {
+        if (this.processQueueTimer) {
+            clearInterval(this.processQueueTimer);
+        }
+        
+        this.processQueueTimer = setInterval(() => {
+            this.processQueue();
+        }, 100); // Process every 100ms
+    }
+
+    /**
+     * Process priority queue
+     */
+    private async processQueue(): Promise<void> {
+        if (this.activeRequests >= OPTIMIZED_CONFIG.maxConcurrentRequests) {
+            return;
+        }
+        
+        if (this.priorityQueue.length === 0) {
+            return;
+        }
+        
+        // Sort by priority (HIGH first) and timestamp (older first)
+        this.priorityQueue.sort((a, b) => {
+            if (a.priority !== b.priority) {
+                const priorityOrder = { [RequestPriority.HIGH]: 3, [RequestPriority.MEDIUM]: 2, [RequestPriority.LOW]: 1 };
+                return priorityOrder[b.priority] - priorityOrder[a.priority];
+            }
+            return a.timestamp - b.timestamp;
+        });
+        
+        // Cancel low priority requests if high priority requests are waiting
+        const highPriorityCount = this.priorityQueue.filter(item => item.priority === RequestPriority.HIGH).length;
+        if (highPriorityCount > 0) {
+            this.cancelLowPriorityRequests();
+        }
+        
+        // Process requests up to the limit
+        while (this.activeRequests < OPTIMIZED_CONFIG.maxConcurrentRequests && this.priorityQueue.length > 0) {
+            const queueEntry = this.priorityQueue.shift()!;
+            
+            if (queueEntry.cancelToken.token.reason) {
+                continue; // Skip cancelled requests
+            }
+            
+            this.activeRequests++;
+            
+            // Execute request
+            queueEntry.request()
+                .finally(() => {
+                    this.activeRequests--;
+                });
+        }
+    }
+
+    /**
+     * Cancel low priority requests
+     */
+    private cancelLowPriorityRequests(): void {
+        this.priorityQueue.forEach(entry => {
+            if (entry.priority === RequestPriority.LOW) {
+                entry.cancelToken.cancel('Cancelled due to high priority request');
+            }
+        });
+        
+        // Remove cancelled requests from queue
+        this.priorityQueue = this.priorityQueue.filter(entry => !entry.cancelToken.token.reason);
+    }
+
+    /**
+     * Start cache cleanup timer
+     */
+    private startCacheCleanup(): void {
+        setInterval(() => {
+            this.cleanupCache();
+        }, 60000); // Cleanup every minute
+    }
+
+    /**
+     * Clean up expired cache entries
+     */
+    private cleanupCache(): void {
+        const now = Date.now();
+        
+        // Clean request cache
+        for (const [key, cached] of this.requestCache.entries()) {
+            if (now - cached.timestamp > OPTIMIZED_CONFIG.cacheTimeout) {
+                this.requestCache.delete(key);
+            }
+        }
+        
+        // Clean response cache
+        for (const [key, cached] of this.responseCache.entries()) {
+            if (now - cached.timestamp > OPTIMIZED_CONFIG.cacheTimeout) {
+                this.responseCache.delete(key);
+            }
+        }
+    }
+
+    /**
+     * Execute request with retry logic
+     */
+    private async executeWithRetry<T>(
+        requestFn: () => Promise<AxiosResponse>,
+        retryCount: number = 0
+    ): Promise<AxiosResponse> {
+        try {
+            return await requestFn();
+        } catch (error: any) {
+            if (!OPTIMIZED_CONFIG.smartRetry || retryCount >= RETRY_CONFIG.maxRetries) {
+                throw error;
+            }
+            
+            // Check if error is retryable
+            const shouldRetry = this.shouldRetryRequest(error);
+            if (!shouldRetry) {
+                throw error;
+            }
+            
+            // Calculate delay with exponential backoff
+            const delay = Math.min(
+                RETRY_CONFIG.baseDelay * Math.pow(2, retryCount),
+                RETRY_CONFIG.maxDelay
+            );
+            
+            console.log(`Retrying request after ${delay}ms (attempt ${retryCount + 1}/${RETRY_CONFIG.maxRetries})`);
+            
+            await new Promise(resolve => setTimeout(resolve, delay));
+            
+            return this.executeWithRetry(requestFn, retryCount + 1);
+        }
+    }
+
+    /**
+     * Check if request should be retried
+     */
+    private shouldRetryRequest(error: any): boolean {
+        // Network errors
+        if (!error.response) {
+            const errorCode = error.code || '';
+            return RETRY_CONFIG.retryableNetworkErrors.includes(errorCode);
+        }
+        
+        // HTTP status codes
+        const statusCode = error.response.status;
+        return RETRY_CONFIG.retryableStatusCodes.includes(statusCode);
+    }
+
+    /**
+     * Add request to priority queue
+     */
+    private addToQueue(
+        request: () => Promise<any>,
+        priority: RequestPriority,
+        cancelToken: CancelTokenSource
+    ): Promise<any> {
+        return new Promise((resolve, reject) => {
+            const queueEntry: PriorityQueueEntry = {
+                request: async () => {
+                    try {
+                        const result = await request();
+                        resolve(result);
+                    } catch (error) {
+                        reject(error);
+                    }
+                },
+                priority,
+                cancelToken,
+                timestamp: Date.now()
+            };
+            
+            this.priorityQueue.push(queueEntry);
+            
+            // Trim queue if it gets too large
+            if (this.priorityQueue.length > OPTIMIZED_CONFIG.priorityQueueSize) {
+                // Remove oldest low priority requests
+                const lowPriorityIndex = this.priorityQueue.findIndex(entry => entry.priority === RequestPriority.LOW);
+                if (lowPriorityIndex !== -1) {
+                    const removed = this.priorityQueue.splice(lowPriorityIndex, 1)[0];
+                    removed.cancelToken.cancel('Queue capacity exceeded');
+                }
+            }
+        });
     }
 
     /**
@@ -298,13 +642,94 @@ class ApiClient {
     }
 
     /**
-     * Make GET request
+     * Make GET request with optimizations
      */
     public async get<T = any>(url: string, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
+        return this.makeOptimizedRequest<T>('GET', url, undefined, config);
+    }
+
+    /**
+     * Make optimized request with all optimizations
+     */
+    private async makeOptimizedRequest<T = any>(
+        method: string,
+        url: string,
+        data?: any,
+        config?: AxiosRequestConfig
+    ): Promise<ApiResponse<T>> {
+        const requestSignature = this.generateRequestSignature(method, url, data, config?.params);
+        const priority = this.getRequestPriority(url);
+        const cancelToken = axios.CancelToken.source();
+
         try {
-            const response = await this.client.get(url, config);
-            return this.transformResponse<T>(response);
+            // 1. CHECK REQUEST DEDUPLICATION
+            if (OPTIMIZED_CONFIG.requestDeduplication) {
+                const cachedRequest = this.requestCache.get(requestSignature);
+                if (cachedRequest) {
+                    console.log(`🔄 Deduplicating request: ${method} ${url}`);
+                    return await cachedRequest.promise;
+                }
+            }
+
+            // 2. CHECK RESPONSE CACHE (for GET requests)
+            if (method === 'GET' && OPTIMIZED_CONFIG.requestDeduplication) {
+                const cachedResponse = this.responseCache.get(requestSignature);
+                if (cachedResponse && Date.now() - cachedResponse.timestamp < OPTIMIZED_CONFIG.cacheTimeout) {
+                    console.log(`💾 Using cached response: ${method} ${url}`);
+                    return {
+                        status: 'success',
+                        data: cachedResponse.data
+                    };
+                }
+            }
+
+            // 3. CREATE REQUEST PROMISE
+            const requestPromise = this.executeOptimizedRequest<T>(method, url, data, config, cancelToken);
+
+            // 4. CACHE REQUEST (for deduplication)
+            if (OPTIMIZED_CONFIG.requestDeduplication) {
+                this.requestCache.set(requestSignature, {
+                    promise: requestPromise,
+                    timestamp: Date.now()
+                });
+            }
+
+            // 5. EXECUTE WITH PRIORITY QUEUE OR DIRECTLY
+            let result: ApiResponse<T>;
+            
+            if (OPTIMIZED_CONFIG.requestPrioritization) {
+                result = await this.addToQueue(
+                    () => requestPromise,
+                    priority,
+                    cancelToken
+                );
+            } else {
+                result = await requestPromise;
+            }
+
+            // 6. CACHE SUCCESSFUL RESPONSE (for GET requests)
+            if (method === 'GET' && result.status === 'success' && OPTIMIZED_CONFIG.requestDeduplication) {
+                this.responseCache.set(requestSignature, {
+                    data: result.data,
+                    timestamp: Date.now()
+                });
+            }
+
+            return result;
+
         } catch (error) {
+            // Remove from cache on error
+            if (OPTIMIZED_CONFIG.requestDeduplication) {
+                this.requestCache.delete(requestSignature);
+            }
+
+            if (axios.isCancel(error)) {
+                return {
+                    status: 'error',
+                    message: 'Request was cancelled due to priority management'
+                };
+            }
+
             if (axios.isAxiosError(error)) {
                 return {
                     status: 'error',
@@ -321,95 +746,71 @@ class ApiClient {
     }
 
     /**
-     * Make POST request
+     * Execute optimized request with retry logic
+     */
+    private async executeOptimizedRequest<T>(
+        method: string,
+        url: string,
+        data?: any,
+        config?: AxiosRequestConfig,
+        cancelToken?: CancelTokenSource
+    ): Promise<ApiResponse<T>> {
+        const requestConfig = {
+            ...config,
+            cancelToken: cancelToken?.token
+        };
+
+        const requestFn = () => {
+            switch (method.toUpperCase()) {
+                case 'GET':
+                    return this.client.get(url, requestConfig);
+                case 'POST':
+                    return this.client.post(url, data, requestConfig);
+                case 'PUT':
+                    return this.client.put(url, data, requestConfig);
+                case 'PATCH':
+                    return this.client.patch(url, data, requestConfig);
+                case 'DELETE':
+                    return this.client.delete(url, requestConfig);
+                default:
+                    throw new Error(`Unsupported HTTP method: ${method}`);
+            }
+        };
+
+        try {
+            const response = await this.executeWithRetry(requestFn);
+            return this.transformResponse<T>(response);
+        } catch (error) {
+            throw error;
+        }
+    }
+
+    /**
+     * Make POST request with optimizations
      */
     public async post<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
-        try {
-            const response = await this.client.post(url, data, config);
-            return this.transformResponse<T>(response);
-        } catch (error) {
-            if (axios.isAxiosError(error)) {
-                return {
-                    status: 'error',
-                    message: error.response?.data?.message || error.message,
-                    data: error.response?.data
-                };
-            }
-
-            return {
-                status: 'error',
-                message: 'An unexpected error occurred'
-            };
-        }
+        return this.makeOptimizedRequest<T>('POST', url, data, config);
     }
 
     /**
-     * Make PUT request
+     * Make PUT request with optimizations
      */
     public async put<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
-        try {
-            const response = await this.client.put(url, data, config);
-            return this.transformResponse<T>(response);
-        } catch (error) {
-            if (axios.isAxiosError(error)) {
-                return {
-                    status: 'error',
-                    message: error.response?.data?.message || error.message,
-                    data: error.response?.data
-                };
-            }
-
-            return {
-                status: 'error',
-                message: 'An unexpected error occurred'
-            };
-        }
+        return this.makeOptimizedRequest<T>('PUT', url, data, config);
     }
 
     /**
-     * Make PATCH request
+     * Make PATCH request with optimizations
      */
     public async patch<T = any>(url: string, data?: any, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
-        try {
-            const response = await this.client.patch(url, data, config);
-            return this.transformResponse<T>(response);
-        } catch (error) {
-            if (axios.isAxiosError(error)) {
-                return {
-                    status: 'error',
-                    message: error.response?.data?.message || error.message,
-                    data: error.response?.data
-                };
-            }
-
-            return {
-                status: 'error',
-                message: 'An unexpected error occurred'
-            };
-        }
+        return this.makeOptimizedRequest<T>('PATCH', url, data, config);
     }
 
     /**
-     * Make DELETE request
+     * Make DELETE request with optimizations
      */
     public async delete<T = any>(url: string, config?: AxiosRequestConfig): Promise<ApiResponse<T>> {
-        try {
-            const response = await this.client.delete(url, config);
-            return this.transformResponse<T>(response);
-        } catch (error) {
-            if (axios.isAxiosError(error)) {
-                return {
-                    status: 'error',
-                    message: error.response?.data?.message || error.message,
-                    data: error.response?.data
-                };
-            }
-
-            return {
-                status: 'error',
-                message: 'An unexpected error occurred'
-            };
-        }
+        return this.makeOptimizedRequest<T>('DELETE', url, undefined, config);
     }
 
     /**
@@ -551,6 +952,43 @@ class ApiClient {
         headerNames.forEach(header => {
             delete this.client.defaults.headers.common[header];
         });
+    }
+
+    /**
+     * Get optimization statistics
+     */
+    public getOptimizationStats(): any {
+        return {
+            cacheHits: this.responseCache.size,
+            activeRequests: this.activeRequests,
+            queuedRequests: this.priorityQueue.length,
+            deduplicationCacheSize: this.requestCache.size,
+            responseCacheSize: this.responseCache.size,
+            config: OPTIMIZED_CONFIG
+        };
+    }
+
+    /**
+     * Clear all caches
+     */
+    public clearCaches(): void {
+        this.requestCache.clear();
+        this.responseCache.clear();
+        this.priorityQueue.forEach(entry => {
+            entry.cancelToken.cancel('Cache cleared');
+        });
+        this.priorityQueue = [];
+    }
+
+    /**
+     * Cleanup resources
+     */
+    public cleanup(): void {
+        if (this.processQueueTimer) {
+            clearInterval(this.processQueueTimer);
+            this.processQueueTimer = null;
+        }
+        this.clearCaches();
     }
 
     /**
@@ -848,18 +1286,7 @@ class ApiClient {
         },
     };
 
-    /**
-     * Agora endpoints
-     */
-    public agora = {
-        getToken: async (channelName: string, userId: string, role: 'publisher' | 'subscriber' = 'publisher') => {
-            return this.post('/api/v1/agora/token', {
-                channel_name: channelName,
-                user_id: userId,
-                role: role,
-            });
-        },
-    };
+
 
     /**
      * Profile endpoints

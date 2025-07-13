@@ -1,4 +1,4 @@
-import { simpleImageCacheService } from './simple-image-cache-service';
+import { imageCacheService } from './image-cache-service';
 import { sqliteService } from './sqlite-service';
 import { likesService } from './likes-service';
 
@@ -43,7 +43,7 @@ export const preloadChatMedia = async (chatId: number, messageIds: number[]): Pr
     const preloadPromises = mediaMessages.map(async (message: any) => {
       if (message.media_url) {
         try {
-          await simpleImageCacheService.getCachedImageUrl(
+          await imageCacheService.getCachedImageUrl(
             message.media_url,
             'chat_media',
             {
@@ -79,7 +79,7 @@ export const preloadMatchImages = async (): Promise<void> => {
       const preloadPromises = matches.map(async (match) => {
         if (match.user && match.user.profile_photo) {
           try {
-            await simpleImageCacheService.getCachedImageUrl(
+            await imageCacheService.getCachedImageUrl(
               match.user.profile_photo.medium_url || match.user.profile_photo.original_url,
               'profile',
               {
@@ -109,13 +109,13 @@ export const cleanupOldImages = async (): Promise<void> => {
     console.log('Cleaning up old cached images');
     
     // Get cache stats
-    const stats = await simpleImageCacheService.getCacheStats();
+    const stats = await imageCacheService.getCacheStats();
     console.log('Current cache stats:', stats);
     
     // Clear cache if it's getting too large
     if (stats.totalSize > 50 * 1024 * 1024) { // 50MB
       console.log('Cache size is large, clearing old images');
-      await simpleImageCacheService.clearCache();
+      await imageCacheService.clearCache();
     }
   } catch (error) {
     console.error('Error cleaning up old images:', error);
@@ -127,7 +127,7 @@ export const cleanupOldImages = async (): Promise<void> => {
  */
 export const getCacheStats = async () => {
   try {
-    return await simpleImageCacheService.getCacheStats();
+    return await imageCacheService.getCacheStats();
   } catch (error) {
     console.error('Error getting cache stats:', error);
     return null;
@@ -140,7 +140,7 @@ export const getCacheStats = async () => {
 export const clearAllCachedImages = async (): Promise<void> => {
   try {
     console.log('Clearing all cached images');
-    await simpleImageCacheService.clearCache();
+    await imageCacheService.clearCache();
     console.log('All cached images cleared');
   } catch (error) {
     console.error('Error clearing cached images:', error);

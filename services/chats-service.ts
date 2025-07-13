@@ -33,33 +33,60 @@ export {
   ProfilePhoto 
 } from '@/types/chat-types';
 
-// Add MessageBatch type for batch processing
-interface MessageBatch {
+// Optimized message cache with sliding window
+interface SlidingMessageCache {
   messages: Message[];
+  messageIds: Set<number>; // For deduplication
   oldestMessageId: number;
   newestMessageId: number;
   hasMore: boolean;
+  preloadThreshold: number; // When to preload next batch
+  isPreloading: boolean;
+  lastScrollDirection: 'up' | 'down' | null;
 }
 
-// Enhanced caching configuration
-interface CacheConfig {
+// Differential sync tracking
+interface DifferentialSyncState {
+  chatId: number;
+  lastSyncTimestamp: number;
+  pendingDeletes: Set<number>; // Message IDs to delete
+  pendingEdits: Map<number, Message>; // Message ID -> edited message
+  syncInProgress: boolean;
+}
+
+// Optimized cache configuration
+interface OptimizedCacheConfig {
   chatListTTL: number; // Time to live for chat list cache
   messagesTTL: number; // Time to live for messages cache
-  maxCachedMessages: number; // Max messages to keep in memory per chat
+  maxCachedMessages: number; // Max messages in sliding window per chat
+  preloadBatchSize: number; // Size of batch to preload
+  preloadThreshold: number; // Messages from end to trigger preload
   syncInterval: number; // Interval for background sync
+  cacheWarmingEnabled: boolean; // Enable cache warming
+  warmingTopChatsCount: number; // Number of top chats to warm
+  idleTimeBeforeWarming: number; // Time to wait before warming
+  deduplicationEnabled: boolean; // Enable message deduplication
 }
 
-const CACHE_CONFIG: CacheConfig = {
+const OPTIMIZED_CACHE_CONFIG: OptimizedCacheConfig = {
   chatListTTL: 5 * 60 * 1000, // 5 minutes
   messagesTTL: 10 * 60 * 1000, // 10 minutes
-  maxCachedMessages: 100, // Keep last 100 messages in memory
+  maxCachedMessages: 50, // Sliding window of 50 messages
+  preloadBatchSize: 20, // Preload 20 messages at a time
+  preloadThreshold: 10, // Start preloading when 10 messages from end
   syncInterval: 30 * 1000, // Sync every 30 seconds
+  cacheWarmingEnabled: true,
+  warmingTopChatsCount: 3, // Warm top 3 chats
+  idleTimeBeforeWarming: 2 * 1000, // Wait 2 seconds before warming
+  deduplicationEnabled: true,
 };
 
-// Cache timestamp tracking
-interface CacheTimestamp {
+// Enhanced cache timestamp tracking
+interface EnhancedCacheTimestamp {
   chatList?: number;
   messages: Map<number, number>; // chatId -> timestamp
+  lastWarming?: number; // When cache warming was last performed
+  differentialSync: Map<number, DifferentialSyncState>; // chatId -> sync state
 }
 
 // Helper functions
@@ -135,13 +162,16 @@ export async function getCurrentUserId(): Promise<number | null> {
 // Enhanced chat service with optimizations
 class ChatsService {
   private currentUserId: number | null = null;
-  private messageCache = new Map<number, MessageBatch>(); // chatId -> messages
+  private messageCache = new Map<number, SlidingMessageCache>(); // chatId -> messages
   private chatCache: Chat[] | null = null;
-  private cacheTimestamps: CacheTimestamp = {
-    messages: new Map()
+  private cacheTimestamps: EnhancedCacheTimestamp = {
+    messages: new Map(),
+    differentialSync: new Map()
   };
   private syncTimer: any = null;
   private pendingApiCalls = new Map<string, Promise<any>>(); // Prevent duplicate API calls
+  private cacheWarmingTimer: any = null;
+  private isAppIdle = false;
   
   // Debounced functions for optimization
   private debouncedSyncChat: (chatId: number) => void;
@@ -159,20 +189,25 @@ class ChatsService {
       this.syncChatListInBackground();
     }, 5000); // 5 second debounce
     
-    // Start background sync
-    this.startBackgroundSync();
-  }
-
-  private async initializeCurrentUser(): Promise<void> {
-    try {
-      const userId = await getCurrentUserId();
-      if (userId) {
-        this.currentUserId = userId;
+          // Start background sync
+      this.startBackgroundSync();
+      
+      // Initialize cache warming if enabled
+      if (OPTIMIZED_CACHE_CONFIG.cacheWarmingEnabled) {
+        this.initializeCacheWarming();
       }
-    } catch (error) {
-      console.error('Error initializing current user:', error);
     }
-  }
+
+    private async initializeCurrentUser(): Promise<void> {
+      try {
+        const userId = await getCurrentUserId();
+        if (userId) {
+          this.currentUserId = userId;
+        }
+      } catch (error) {
+        console.error('Error initializing current user:', error);
+      }
+    }
 
   private async getCurrentUser(): Promise<number | null> {
     if (this.currentUserId) {
@@ -879,7 +914,7 @@ class ChatsService {
     }
     
     const age = Date.now() - this.cacheTimestamps.chatList;
-    return age < CACHE_CONFIG.chatListTTL;
+    return age < OPTIMIZED_CACHE_CONFIG.chatListTTL;
   }
 
   private isMessageCacheValid(chatId: number): boolean {
@@ -889,52 +924,364 @@ class ChatsService {
     }
     
     const age = Date.now() - timestamp;
-    return age < CACHE_CONFIG.messagesTTL;
+    return age < OPTIMIZED_CACHE_CONFIG.messagesTTL;
   }
 
-  private addMessageToCache(chatId: number, message: Message): void {
-    const cachedBatch = this.messageCache.get(chatId);
+  // === OPTIMIZED CACHE METHODS ===
+
+  /**
+   * Initialize cache warming system
+   */
+  private initializeCacheWarming(): void {
+    // Set up idle detection
+    this.setupIdleDetection();
     
-    if (cachedBatch) {
-      // Add to beginning (newest first)
-      cachedBatch.messages.unshift(message);
-      cachedBatch.newestMessageId = message.id;
+    // Schedule initial cache warming
+    this.cacheWarmingTimer = setTimeout(() => {
+      this.performCacheWarming();
+    }, OPTIMIZED_CACHE_CONFIG.idleTimeBeforeWarming);
+  }
+
+  /**
+   * Set up idle detection for cache warming
+   */
+  private setupIdleDetection(): void {
+    // Simple idle detection based on API calls
+    let lastActivity = Date.now();
+    
+    // Override the existing API call tracking to detect activity
+    const originalApiCall = this.pendingApiCalls.set.bind(this.pendingApiCalls);
+    this.pendingApiCalls.set = (key: string, promise: Promise<any>) => {
+      lastActivity = Date.now();
+      this.isAppIdle = false;
+      return originalApiCall(key, promise);
+    };
+
+    // Check for idle state every 5 seconds
+    setInterval(() => {
+      const timeSinceActivity = Date.now() - lastActivity;
+      this.isAppIdle = timeSinceActivity > OPTIMIZED_CACHE_CONFIG.idleTimeBeforeWarming;
+    }, 5000);
+  }
+
+  /**
+   * Perform cache warming for top chats
+   */
+  private async performCacheWarming(): Promise<void> {
+    if (!this.isAppIdle || !OPTIMIZED_CACHE_CONFIG.cacheWarmingEnabled) {
+      return;
+    }
+
+    try {
+      console.log('Starting cache warming...');
       
-      // Trim cache if too large
-      if (cachedBatch.messages.length > CACHE_CONFIG.maxCachedMessages) {
-        cachedBatch.messages = cachedBatch.messages.slice(0, CACHE_CONFIG.maxCachedMessages);
-        cachedBatch.hasMore = true;
+      // Get current chat list
+      const chats = await this.getChats(1);
+      if (!chats || chats.status !== 'success') {
+        return;
+      }
+
+      // Warm top N chats
+      const topChats = chats.data.chats.slice(0, OPTIMIZED_CACHE_CONFIG.warmingTopChatsCount);
+      
+      for (const chat of topChats) {
+        if (!this.isAppIdle) {
+          break; // Stop if app becomes active
+        }
+        
+        // Check if chat is already cached
+        if (this.messageCache.has(chat.id) && this.isMessageCacheValid(chat.id)) {
+          continue;
+        }
+        
+        console.log(`Cache warming for chat ${chat.id}`);
+        
+        // Warm the cache in background
+        this.getChatDetails(chat.id).catch(error => {
+          console.error(`Error warming cache for chat ${chat.id}:`, error);
+        });
+        
+        // Small delay between warmings
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      this.cacheTimestamps.lastWarming = Date.now();
+      console.log('Cache warming completed');
+    } catch (error) {
+      console.error('Error during cache warming:', error);
+    }
+  }
+
+  /**
+   * Add message to sliding window cache with deduplication
+   */
+  private addMessageToSlidingCache(chatId: number, message: Message): void {
+    const cachedData = this.messageCache.get(chatId);
+    
+    if (cachedData) {
+      // Check for deduplication
+      if (OPTIMIZED_CACHE_CONFIG.deduplicationEnabled && cachedData.messageIds.has(message.id)) {
+        console.log(`Duplicate message ${message.id} detected, skipping`);
+        return;
+      }
+      
+      // Add to beginning (newest first)
+      cachedData.messages.unshift(message);
+      cachedData.messageIds.add(message.id);
+      cachedData.newestMessageId = message.id;
+      
+      // Maintain sliding window size
+      if (cachedData.messages.length > OPTIMIZED_CACHE_CONFIG.maxCachedMessages) {
+        const removedMessages = cachedData.messages.splice(OPTIMIZED_CACHE_CONFIG.maxCachedMessages);
+        
+        // Remove from deduplication set
+        removedMessages.forEach(msg => {
+          cachedData.messageIds.delete(msg.id);
+        });
+        
+        cachedData.hasMore = true;
+        cachedData.oldestMessageId = cachedData.messages[cachedData.messages.length - 1].id;
       }
     } else {
-      // Create new batch
-      const batch: MessageBatch = {
+      // Create new sliding cache
+      const newCache: SlidingMessageCache = {
         messages: [message],
+        messageIds: new Set([message.id]),
         oldestMessageId: message.id,
         newestMessageId: message.id,
-        hasMore: false
+        hasMore: false,
+        preloadThreshold: OPTIMIZED_CACHE_CONFIG.preloadThreshold,
+        isPreloading: false,
+        lastScrollDirection: null
       };
       
-      this.messageCache.set(chatId, batch);
+      this.messageCache.set(chatId, newCache);
       this.cacheTimestamps.messages.set(chatId, Date.now());
     }
   }
 
-  private replaceOptimisticMessage(chatId: number, tempId: number, realMessage: Message): void {
-    const cachedBatch = this.messageCache.get(chatId);
+  /**
+   * Check if preload is needed based on scroll position
+   */
+  private shouldPreloadMessages(chatId: number, currentIndex: number): boolean {
+    const cachedData = this.messageCache.get(chatId);
+    if (!cachedData || cachedData.isPreloading || !cachedData.hasMore) {
+      return false;
+    }
     
-    if (cachedBatch) {
-      const index = cachedBatch.messages.findIndex(m => m.id === tempId);
+    const messagesFromEnd = cachedData.messages.length - currentIndex;
+    return messagesFromEnd <= cachedData.preloadThreshold;
+  }
+
+  /**
+   * Preload next batch of messages
+   */
+  private async preloadNextBatch(chatId: number): Promise<void> {
+    const cachedData = this.messageCache.get(chatId);
+    if (!cachedData || cachedData.isPreloading) {
+      return;
+    }
+    
+    cachedData.isPreloading = true;
+    
+    try {
+      console.log(`Preloading next batch for chat ${chatId}`);
+      
+      // Get older messages
+      const response = await this.getChatDetails(
+        chatId,
+        cachedData.oldestMessageId,
+        OPTIMIZED_CACHE_CONFIG.preloadBatchSize
+      );
+      
+      if (response && response.status === 'success' && response.data.messages.length > 0) {
+        const newMessages = response.data.messages;
+        
+        // Add to the end of cache (older messages)
+        newMessages.forEach(msg => {
+          if (!cachedData.messageIds.has(msg.id)) {
+            cachedData.messages.push(msg);
+            cachedData.messageIds.add(msg.id);
+          }
+        });
+        
+        cachedData.oldestMessageId = newMessages[newMessages.length - 1].id;
+        cachedData.hasMore = response.data.pagination.has_more;
+        
+        // Maintain sliding window
+        if (cachedData.messages.length > OPTIMIZED_CACHE_CONFIG.maxCachedMessages) {
+          const excessCount = cachedData.messages.length - OPTIMIZED_CACHE_CONFIG.maxCachedMessages;
+          const removedMessages = cachedData.messages.splice(0, excessCount);
+          
+          // Remove from deduplication set
+          removedMessages.forEach(msg => {
+            cachedData.messageIds.delete(msg.id);
+          });
+          
+          cachedData.newestMessageId = cachedData.messages[0].id;
+        }
+      }
+    } catch (error) {
+      console.error(`Error preloading messages for chat ${chatId}:`, error);
+    } finally {
+      cachedData.isPreloading = false;
+    }
+  }
+
+  /**
+   * Initialize differential sync state for a chat
+   */
+  private initializeDifferentialSync(chatId: number): void {
+    if (!this.cacheTimestamps.differentialSync.has(chatId)) {
+      const syncState: DifferentialSyncState = {
+        chatId,
+        lastSyncTimestamp: Date.now(),
+        pendingDeletes: new Set(),
+        pendingEdits: new Map(),
+        syncInProgress: false
+      };
+      
+      this.cacheTimestamps.differentialSync.set(chatId, syncState);
+    }
+  }
+
+  /**
+   * Perform differential sync for a chat
+   */
+  private async performDifferentialSync(chatId: number): Promise<void> {
+    const syncState = this.cacheTimestamps.differentialSync.get(chatId);
+    if (!syncState || syncState.syncInProgress) {
+      return;
+    }
+    
+    syncState.syncInProgress = true;
+    
+    try {
+      console.log(`Performing differential sync for chat ${chatId}`);
+      
+      // Get messages newer than last sync
+      const response = await apiClient.chats.getMessagesAfter(chatId, syncState.lastSyncTimestamp);
+      
+      if (response && response.status === 'success' && response.data.messages) {
+        const newMessages = response.data.messages;
+        
+        // Process new messages
+        newMessages.forEach(message => {
+          this.addMessageToSlidingCache(chatId, message);
+        });
+        
+        // Process pending deletes
+        syncState.pendingDeletes.forEach(messageId => {
+          this.removeMessageFromSlidingCache(chatId, messageId);
+        });
+        syncState.pendingDeletes.clear();
+        
+        // Process pending edits
+        syncState.pendingEdits.forEach((editedMessage, messageId) => {
+          this.updateMessageInSlidingCache(chatId, editedMessage);
+        });
+        syncState.pendingEdits.clear();
+        
+        // Update last sync timestamp
+        syncState.lastSyncTimestamp = Date.now();
+      }
+    } catch (error) {
+      console.error(`Error in differential sync for chat ${chatId}:`, error);
+    } finally {
+      syncState.syncInProgress = false;
+    }
+  }
+
+  /**
+   * Remove message from sliding cache
+   */
+  private removeMessageFromSlidingCache(chatId: number, messageId: number): void {
+    const cachedData = this.messageCache.get(chatId);
+    
+    if (cachedData) {
+      const index = cachedData.messages.findIndex(m => m.id === messageId);
       if (index !== -1) {
-        cachedBatch.messages[index] = realMessage;
+        cachedData.messages.splice(index, 1);
+        cachedData.messageIds.delete(messageId);
+        
+        // Update bounds if necessary
+        if (cachedData.messages.length > 0) {
+          cachedData.newestMessageId = cachedData.messages[0].id;
+          cachedData.oldestMessageId = cachedData.messages[cachedData.messages.length - 1].id;
+        }
+      }
+    }
+  }
+
+  /**
+   * Update message in sliding cache
+   */
+  private updateMessageInSlidingCache(chatId: number, updatedMessage: Message): void {
+    const cachedData = this.messageCache.get(chatId);
+    
+    if (cachedData) {
+      const index = cachedData.messages.findIndex(m => m.id === updatedMessage.id);
+      if (index !== -1) {
+        cachedData.messages[index] = updatedMessage;
+      }
+    }
+  }
+
+  /**
+   * Get messages with scroll position tracking for preloading
+   */
+  async getMessagesWithPreload(chatId: number, currentIndex: number, direction: 'up' | 'down'): Promise<Message[]> {
+    const cachedData = this.messageCache.get(chatId);
+    if (!cachedData) {
+      return [];
+    }
+    
+    // Update scroll direction
+    cachedData.lastScrollDirection = direction;
+    
+    // Check if preload is needed
+    if (direction === 'down' && this.shouldPreloadMessages(chatId, currentIndex)) {
+      // Preload in background
+      this.preloadNextBatch(chatId).catch(error => {
+        console.error(`Error preloading messages for chat ${chatId}:`, error);
+      });
+    }
+    
+    return cachedData.messages;
+  }
+
+  private addMessageToCache(chatId: number, message: Message): void {
+    // Use the new sliding cache method
+    this.addMessageToSlidingCache(chatId, message);
+    
+    // Initialize differential sync if not already done
+    this.initializeDifferentialSync(chatId);
+  }
+
+  private replaceOptimisticMessage(chatId: number, tempId: number, realMessage: Message): void {
+    const cachedData = this.messageCache.get(chatId);
+    
+    if (cachedData) {
+      const index = cachedData.messages.findIndex(m => m.id === tempId);
+      if (index !== -1) {
+        // Remove old message from deduplication set
+        cachedData.messageIds.delete(tempId);
+        
+        // Add new message
+        cachedData.messages[index] = realMessage;
+        cachedData.messageIds.add(realMessage.id);
       }
     }
   }
 
   private removeMessageFromCache(chatId: number, messageId: number): void {
-    const cachedBatch = this.messageCache.get(chatId);
+    // Use the new sliding cache method
+    this.removeMessageFromSlidingCache(chatId, messageId);
     
-    if (cachedBatch) {
-      cachedBatch.messages = cachedBatch.messages.filter(m => m.id !== messageId);
+    // Add to pending deletes for differential sync
+    const syncState = this.cacheTimestamps.differentialSync.get(chatId);
+    if (syncState) {
+      syncState.pendingDeletes.add(messageId);
     }
   }
 
@@ -965,7 +1312,7 @@ class ChatsService {
 
     this.syncTimer = setInterval(() => {
       this.performBackgroundSync();
-    }, CACHE_CONFIG.syncInterval);
+    }, OPTIMIZED_CACHE_CONFIG.syncInterval);
   }
 
   private async performBackgroundSync(): Promise<void> {
@@ -974,25 +1321,42 @@ class ChatsService {
       return;
     }
 
-    // Sync active chats
-    for (const [chatId, batch] of this.messageCache) {
+    // Perform differential sync for active chats
+    for (const [chatId, cachedData] of this.messageCache) {
       if (this.isMessageCacheValid(chatId)) {
         continue; // Skip if cache is still fresh
       }
       
-      this.debouncedSyncChat(chatId);
+      // Use differential sync instead of full sync
+      this.performDifferentialSync(chatId).catch(error => {
+        console.error(`Error in differential sync for chat ${chatId}:`, error);
+      });
     }
 
     // Sync chat list if needed
     if (!this.isChatListCacheValid()) {
       this.debouncedSyncChatList();
     }
+    
+    // Perform cache warming if app is idle
+    if (this.isAppIdle && OPTIMIZED_CACHE_CONFIG.cacheWarmingEnabled) {
+      const timeSinceLastWarming = this.cacheTimestamps.lastWarming 
+        ? Date.now() - this.cacheTimestamps.lastWarming 
+        : Infinity;
+      
+      // Only warm cache if enough time has passed
+      if (timeSinceLastWarming > OPTIMIZED_CACHE_CONFIG.idleTimeBeforeWarming) {
+        this.performCacheWarming();
+      }
+    }
   }
 
   private async syncChatInBackground(chatId: number): Promise<void> {
     try {
       console.log(`Background sync for chat ${chatId}`);
-      await this.getChatDetails(chatId, undefined, CONFIG.APP.chatMessagesPageSize);
+      
+      // Use differential sync for more efficient updates
+      await this.performDifferentialSync(chatId);
     } catch (error) {
       console.error(`Error syncing chat ${chatId}:`, error);
     }
@@ -1050,13 +1414,13 @@ class ChatsService {
 
   async updateMessageWithEdit(editedMessage: Message): Promise<void> {
     try {
-      // Update memory cache
-      const cachedBatch = this.messageCache.get(editedMessage.chat_id);
-      if (cachedBatch) {
-        const messageIndex = cachedBatch.messages.findIndex(m => m.id === editedMessage.id);
-        if (messageIndex !== -1) {
-          cachedBatch.messages[messageIndex] = editedMessage;
-        }
+      // Update sliding cache
+      this.updateMessageInSlidingCache(editedMessage.chat_id, editedMessage);
+      
+      // Add to differential sync pending edits
+      const syncState = this.cacheTimestamps.differentialSync.get(editedMessage.chat_id);
+      if (syncState) {
+        syncState.pendingEdits.set(editedMessage.id, editedMessage);
       }
       
       // Update SQLite
@@ -1068,11 +1432,11 @@ class ChatsService {
 
   async updateMessageWithDelete(messageId: number): Promise<void> {
     try {
-      // Remove from all caches
-      for (const [chatId, batch] of this.messageCache) {
-        const index = batch.messages.findIndex(m => m.id === messageId);
+      // Remove from all sliding caches
+      for (const [chatId, cachedData] of this.messageCache) {
+        const index = cachedData.messages.findIndex(m => m.id === messageId);
         if (index !== -1) {
-          batch.messages.splice(index, 1);
+          this.removeMessageFromSlidingCache(chatId, messageId);
           break;
         }
       }
@@ -1123,13 +1487,20 @@ class ChatsService {
       this.syncTimer = null;
     }
     
+    if (this.cacheWarmingTimer) {
+      clearTimeout(this.cacheWarmingTimer);
+      this.cacheWarmingTimer = null;
+    }
+    
     // Clear caches
     this.messageCache.clear();
     this.chatCache = null;
     this.cacheTimestamps = {
-      messages: new Map()
+      messages: new Map(),
+      differentialSync: new Map()
     };
     this.pendingApiCalls.clear();
+    this.isAppIdle = false;
   }
 }
 

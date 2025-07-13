@@ -6,8 +6,8 @@ A dating app with chat, audio, and video call functionality.
 
 - User profiles and matching
 - Real-time chat with typing indicators
-- Audio calls using Agora SDK
-- Video calls using Agora SDK
+- Audio calls using VideoSDK
+- Video calls using VideoSDK
 - Offline message support
 - Dark mode support
 
@@ -18,7 +18,7 @@ A dating app with chat, audio, and video call functionality.
 - Node.js (v14 or later)
 - Yarn package manager
 - Expo CLI
-- Agora.io account (for audio/video calls)
+- VideoSDK account (for audio/video calls)
 
 ### Installation
 
@@ -27,13 +27,15 @@ A dating app with chat, audio, and video call functionality.
    ```
    yarn install
    ```
-3. Set up Agora SDK:
-   - Create an account on [Agora.io](https://www.agora.io/)
-   - Create a new project in the Agora Console
-   - Copy your App ID
-   - Open `services/agora-service.ts` and replace the placeholder App ID:
+3. Set up VideoSDK:
+   - Create an account on [VideoSDK.live](https://videosdk.live/)
+   - Get your API key from the VideoSDK dashboard
+   - Update the VideoSDK token in `services/config.ts`:
      ```typescript
-     const AGORA_APP_ID = 'your-agora-app-id'; // Replace with your actual Agora App ID
+     VIDEOSDK: {
+       token: 'your-videosdk-token-here', // Replace with your actual VideoSDK token
+       apiEndpoint: 'https://api.videosdk.live/v2',
+     },
      ```
 
 4. Start the development server:
@@ -43,11 +45,11 @@ A dating app with chat, audio, and video call functionality.
 
 ## Audio and Video Calls
 
-The app uses Agora SDK for audio and video calls. The implementation includes:
+The app uses VideoSDK for audio and video calls. The implementation includes:
 
 ### Services
 
-- `agora-service.ts`: Handles the Agora SDK integration, including initializing the engine, joining/leaving channels, and managing call state.
+- `videosdk-service.ts`: Handles the VideoSDK integration, including creating meetings, joining/leaving calls, and managing call state.
 
 ### Components
 
@@ -68,32 +70,29 @@ During a call, users can:
 
 ### Testing Calls
 
-For testing purposes, the app uses a simple channel naming convention:
-- Channel ID: `test-{chatId}`
-- Both users need to join the same channel to connect
+For testing purposes, the app uses a deterministic meeting ID generation:
+- Meeting ID: `chat-{chatId}-meeting`
+- Both users will get the same meeting ID for the same chat
 
-### Agora Token Setup
+### VideoSDK Token Setup
 
-**Important**: Your Agora project requires token authentication. See [Agora Token Setup Guide](docs/agora-token-setup.md) for detailed instructions.
+**Important**: Your VideoSDK project requires proper token authentication. The app includes a test token for development purposes.
 
-#### Quick Setup Options:
+#### Setup Options:
 
 1. **Backend Token Generation (Recommended)**:
    - Set up token generation on your Laravel backend
-   - Follow the guide in `docs/agora-token-setup.md`
+   - Implement the `/api/v1/video-call/token` endpoint
+   - Return a valid VideoSDK token
 
-2. **Disable Token Authentication (Development Only)**:
-   - Go to Agora Console > Project Management > Security
-   - Set "App Certificate" to "Disabled"
-   - Update the service to return empty string for tokens
-
-3. **Temporary Tokens (Current Implementation)**:
-   - The app currently generates temporary tokens for testing
+2. **Test Token (Development Only)**:
+   - The app currently uses a test token for development
    - This is not secure for production
 
 ### Latest Updates
 
-- Updated to use the latest Agora React Native SDK (v4.5.3)
+- Migrated from Agora SDK to VideoSDK
+- Updated to use the latest VideoSDK React Native SDK
 - Added token authentication support
 - Improved error handling and connection state management
 - Enhanced UI with better animations and visual feedback
@@ -118,19 +117,17 @@ These permissions are configured in the `app.json` file.
 
 If you encounter issues with audio or video calls:
 
-1. Make sure you've replaced the placeholder Agora App ID with your actual App ID
-2. **Check token authentication setup** - see [Agora Token Setup Guide](docs/agora-token-setup.md)
-3. Ensure your Agora project has the appropriate security settings
-4. Check that you've granted the necessary camera and microphone permissions on your device
-5. Verify that both users are joining the same channel ID
+1. Make sure you've replaced the placeholder VideoSDK token with your actual token
+2. Check that you've granted the necessary camera and microphone permissions on your device
+3. Verify that both users are joining the same meeting ID
+4. Check your VideoSDK dashboard for any account issues
 
-### Common Error Codes:
+### Common Issues:
 
-- **Error 110**: Invalid token - Check token generation or disable App Certificate
-- **Error 8**: Invalid token format - Verify token generation logic
-- **Error 9**: Token expired - Implement token refresh mechanism
-- **Error 6**: Invalid App ID - Check your Agora App ID
-- **Error 7**: Invalid channel name - Check channel name format
+- **Token errors**: Verify your VideoSDK token is valid and not expired
+- **Permission errors**: Ensure camera and microphone permissions are granted
+- **Connection issues**: Check your internet connection and VideoSDK service status
+- **Meeting creation failures**: Verify your VideoSDK account has sufficient credits
 
 ## License
 
